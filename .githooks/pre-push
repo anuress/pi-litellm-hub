@@ -1,0 +1,25 @@
+#!/bin/sh
+
+failed=0
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha
+do
+  [ -n "$local_ref" ] || continue
+
+  case "$local_sha" in
+    '') continue ;;
+    *[!0]*) ;;
+    *) continue ;;
+  esac
+
+  case "$remote_sha" in
+    '') range="$local_sha" ;;
+    *[!0]*) range="$remote_sha..$local_sha" ;;
+    *) range="$local_sha" ;;
+  esac
+
+  if ! node scripts/privacy-scan.mjs --push "$range"; then
+    failed=1
+  fi
+done
+
+exit "$failed"
