@@ -123,6 +123,66 @@ test("configured startup registers reference auth and only same-gateway model UR
   assert.equal(registration.config.models.some((model: any) => model.baseUrl === "https://foreign.example/v1"), false);
 });
 
+test("offline provider refresh reuses loaded models without fetching or changing the reason", async () => {
+  const runtime = fakeRuntime();
+  let fetchCalls = 0;
+  const fetchImpl: typeof fetch = async () => {
+    fetchCalls += 1;
+    return responseFor(["chat-model", "claude-model"]);
+  };
+  const state = await createHub(dependencies(runtime.pi, fetchImpl));
+  const refreshModels = runtime.providers[0].config.refreshModels;
+  const currentModels = state.models.map(({ model }) => model);
+  state.reason = "keep this reason";
+  const callsBeforeRefresh = fetchCalls;
+
+  const refreshed = await refreshModels({ allowNetwork: false, signal: new AbortController().signal });
+
+  assert.equal(fetchCalls - callsBeforeRefresh, 0);
+  assert.deepEqual(refreshed, currentModels);
+  refreshed.forEach((model, index) => assert.strictEqual(model, currentModels[index]));
+  assert.equal(state.reason, "keep this reason");
+});
+
+test("online provider refresh fetches the catalog once", async () => {
+  const runtime = fakeRuntime();
+  let fetchCalls = 0;
+  let ids = ["chat-model"];
+  const fetchImpl: typeof fetch = async () => {
+    fetchCalls += 1;
+    return responseFor(ids);
+  };
+  const state = await createHub(dependencies(runtime.pi, fetchImpl));
+  const refreshModels = runtime.providers[0].config.refreshModels;
+  ids = ["claude-model"];
+  fetchCalls = 0;
+
+  const refreshed = await refreshModels({ allowNetwork: true, signal: new AbortController().signal });
+
+  assert.equal(fetchCalls, 1);
+  assert.deepEqual(refreshed.map((model: any) => model.id), ["claude-model"]);
+  assert.equal(state.models[0].id, "claude-model");
+});
+
+test("startup plus pi offline refresh makes one gateway request total", async () => {
+  const runtime = fakeRuntime();
+  let fetchCalls = 0;
+  const fetchImpl: typeof fetch = async (input) => {
+    fetchCalls += 1;
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    assert.equal(new URL(url).pathname, "/v1/models");
+    return responseFor(["chat-model"]);
+  };
+  await createHub(dependencies(runtime.pi, fetchImpl));
+
+  assert.equal(fetchCalls, 1);
+  await runtime.providers[0].config.refreshModels({
+    allowNetwork: false,
+    signal: new AbortController().signal,
+  });
+  assert.equal(fetchCalls, 1);
+});
+
 test("a gateway failure does not throw, register models, or expose its key in status", async () => {
   const runtime = fakeRuntime();
   const fetchImpl: typeof fetch = async () => responseFor([], 503, `gateway rejected ${fakeKey}`);

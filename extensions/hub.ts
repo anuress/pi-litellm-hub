@@ -79,7 +79,10 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
       apiKey: config.apiKeyRef,
       models: providerModels(result.models, config),
       // Legacy ProviderConfig refresh replaces the provider's models with the returned list.
-      refreshModels: async ({ signal }) => {
+      refreshModels: async ({ signal, allowNetwork }) => {
+        // Pi uses allowNetwork=false for its offline/cache-only initialization phase.
+        if (allowNetwork === false) return state.models.map(({ model }) => model);
+
         let refreshed: Discovery;
         try {
           refreshed = await discover(signal);
