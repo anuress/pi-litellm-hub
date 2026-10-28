@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import test from "node:test";
 import { scanText } from "../scripts/privacy-scan.mjs";
 
 const scannerPath = fileURLToPath(new URL("../scripts/privacy-scan.mjs", import.meta.url));
+const prePushPath = fileURLToPath(new URL("../.githooks/pre-push", import.meta.url));
 
 function makeRepo() {
   const repo = mkdtempSync(join(tmpdir(), "privacy-scan-repo-"));
@@ -183,6 +184,96 @@ test("history mode scans committed additions", () => {
     assert.equal(result.status, 1);
     assert.match(result.output, /history\.txt:1 key-shape/);
     assert.equal(result.output.includes(shapedKey), false);
+  } finally {
+    removeRepo(repo);
+  }
+});
+
+test("staged scanning treats binary files as text", () => {
+  const { repo, home } = makeRepo();
+  const shapedKey = ["sk", "abcdefgh12"].join("-");
+  try {
+    writeFileSync(join(repo, "binary.dat"), Buffer.concat([Buffer.from([0]), Buffer.from(shapedKey)]));
+    execFileSync("git", ["-C", repo, "add", "--", "binary.dat"]);
+
+    const result = runScanner(repo, home, ["--staged"]);
+    assert.equal(result.status, 1);
+    assert.match(result.output, /binary\.dat:1 key-shape/);
+    assert.equal(result.output.includes(shapedKey), false);
+  } finally {
+    removeRepo(repo);
+  }
+});
+
+test("history scans the first-parent diff of merge resolutions", () => {
+  const { repo, home, denyValue } = makeRepo();
+  try {
+    execFileSync("git", ["-C", repo, "config", "user.name", "Test Runner"]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "tester@example.test"]);
+    execFileSync("git", ["-C", repo, "config", "commit.gpgsign", "false"]);
+    const mainBranch = execFileSync("git", ["-C", repo, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" }).trim();
+    writeFileSync(join(repo, "conflict.txt"), "base\n");
+    execFileSync("git", ["-C", repo, "add", "--", "conflict.txt"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "base"]);
+
+    execFileSync("git", ["-C", repo, "checkout", "-q", "-b", "feature"]);
+    writeFileSync(join(repo, "conflict.txt"), "feature\n");
+    execFileSync("git", ["-C", repo, "add", "--", "conflict.txt"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "feature"]);
+
+    execFileSync("git", ["-C", repo, "checkout", "-q", mainBranch]);
+    writeFileSync(join(repo, "conflict.txt"), "main\n");
+    execFileSync("git", ["-C", repo, "add", "--", "conflict.txt"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "main"]);
+    const merge = spawnSync("git", ["-C", repo, "merge", "--no-commit", "feature"], { stdio: "ignore" });
+    assert.notEqual(merge.status, 0);
+
+    writeFileSync(join(repo, "conflict.txt"), `${denyValue}\n`);
+    execFileSync("git", ["-C", repo, "add", "--", "conflict.txt"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "merge resolution"]);
+
+    const result = runScanner(repo, home, ["--history"]);
+    assert.equal(result.status, 1);
+    assert.match(result.output, /conflict\.txt:1 deny/);
+    assert.equal(result.output.includes(denyValue), false);
+  } finally {
+    removeRepo(repo);
+  }
+});
+
+test("history and pre-push scan annotated tag messages", () => {
+  const { repo, home } = makeRepo();
+  const shapedKey = ["sk", "abcdefgh12"].join("-");
+  const tagName = "release-candidate";
+  try {
+    execFileSync("git", ["-C", repo, "config", "user.name", "Test Runner"]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "tester@example.test"]);
+    execFileSync("git", ["-C", repo, "config", "commit.gpgsign", "false"]);
+    writeFileSync(join(repo, "release.txt"), "release\n");
+    execFileSync("git", ["-C", repo, "add", "--", "release.txt"]);
+    execFileSync("git", ["-C", repo, "commit", "-q", "-m", "release"]);
+    execFileSync("git", ["-C", repo, "tag", "-a", tagName, "-m", `release ${shapedKey}`]);
+
+    const history = runScanner(repo, home, ["--history"]);
+    assert.equal(history.status, 1);
+    assert.match(history.output, new RegExp(`tag:${tagName}:1 key-shape`));
+    assert.equal(history.output.includes(shapedKey), false);
+
+    mkdirSync(join(repo, "scripts"), { recursive: true });
+    copyFileSync(scannerPath, join(repo, "scripts", "privacy-scan.mjs"));
+    copyFileSync(fileURLToPath(new URL("../scripts/privacy-git.mjs", import.meta.url)), join(repo, "scripts", "privacy-git.mjs"));
+    const tagSha = execFileSync("git", ["-C", repo, "rev-parse", `refs/tags/${tagName}`], { encoding: "utf8" }).trim();
+    const zeros = "0".repeat(tagSha.length);
+    const prePush = spawnSync("sh", [prePushPath], {
+      cwd: repo,
+      encoding: "utf8",
+      env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      input: `refs/tags/${tagName} ${tagSha} refs/tags/${tagName} ${zeros}\n`,
+    });
+    assert.equal(prePush.status, 1);
+    assert.match(prePush.stdout, new RegExp(`tag:${tagName}:1 key-shape`));
+    assert.doesNotMatch(`${prePush.stdout}${prePush.stderr}`, /privacy-scan: scan failed/);
+    assert.equal(`${prePush.stdout}${prePush.stderr}`.includes(shapedKey), false);
   } finally {
     removeRepo(repo);
   }

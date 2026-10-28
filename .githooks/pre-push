@@ -20,6 +20,15 @@ do
   if ! node scripts/privacy-scan.mjs --push "$range"; then
     failed=1
   fi
+
+  case "$local_ref" in
+    refs/tags/*)
+      tag_name=${local_ref#refs/tags/}
+      if ! node scripts/privacy-scan.mjs --tag "$tag_name" "$local_sha"; then
+        failed=1
+      fi
+      ;;
+  esac
 done
 
 exit "$failed"

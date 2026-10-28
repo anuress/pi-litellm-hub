@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scanAddedLines, scanAllTagMessages, scanTagMessage } from "./privacy-git.mjs";
 
 const KEY_SHAPE = /sk-[A-Za-z0-9_-]{8,}/g;
 const MAX_GIT_OUTPUT = 256 * 1024 * 1024;
@@ -79,86 +80,6 @@ function loadLiveKey() {
   return undefined;
 }
 
-function decodeGitQuotedPath(quotedPath) {
-  const bytes = [];
-  const end = quotedPath.length - 1;
-  const escapes = { '"': 34, "\\": 92, a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 };
-
-  for (let index = 1; index < end; index += 1) {
-    if (quotedPath[index] !== "\\") {
-      const value = String.fromCodePoint(quotedPath.codePointAt(index));
-      bytes.push(...Buffer.from(value));
-      index += value.length - 1;
-      continue;
-    }
-
-    const escaped = quotedPath[++index];
-    if (/[0-7]/.test(escaped ?? "")) {
-      let octal = escaped;
-      while (octal.length < 3 && /[0-7]/.test(quotedPath[index + 1] ?? "")) octal += quotedPath[++index];
-      bytes.push(Number.parseInt(octal, 8));
-    } else if (Object.hasOwn(escapes, escaped)) bytes.push(escapes[escaped]);
-    else if (escaped !== undefined) bytes.push(...Buffer.from(escaped));
-  }
-
-  return Buffer.from(bytes).toString("utf8");
-}
-
-function parseAddedPath(header) {
-  const rawPath = header.startsWith('"') ? decodeGitQuotedPath(header) : header;
-  if (rawPath === "/dev/null") return null;
-  return rawPath.startsWith("b/") ? rawPath.slice(2) : rawPath;
-}
-
-function scanAddedLines(patch, rules) {
-  const hits = [];
-  let path = null;
-  let newLine = null;
-  let inHunk = false;
-
-  for (const line of patch.split(/\r?\n/)) {
-    if (line.startsWith("diff --git ")) {
-      path = null;
-      newLine = null;
-      inHunk = false;
-      continue;
-    }
-
-    if (!inHunk && line.startsWith("+++ ")) {
-      path = parseAddedPath(line.slice(4));
-      continue;
-    }
-
-    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (hunk) {
-      newLine = Number(hunk[1]);
-      inHunk = true;
-      continue;
-    }
-
-    if (!inHunk) continue;
-    if (line.startsWith("+")) {
-      if (path !== null && newLine !== null) {
-        for (const hit of scanText(line.slice(1), rules)) {
-          hits.push({ path, line: newLine + hit.line - 1, rule: hit.rule });
-        }
-      }
-      newLine += 1;
-    } else if (line.startsWith("-")) {
-      // Removed lines do not exist in the new tree and are not scanned here.
-    } else if (line.startsWith(" ")) {
-      newLine += 1;
-    } else if (line.startsWith("\\ No newline at end of file")) {
-      // This marker is patch metadata, not source content.
-    } else {
-      inHunk = false;
-      newLine = null;
-    }
-  }
-
-  return hits;
-}
-
 function addEmailHits(line, kind, commitId, rules, hits) {
   const email = line.match(/<([^<>]+)>\s*$/)?.[1];
   if (!email) return;
@@ -184,7 +105,7 @@ function scanLogOutput(log, rules) {
     messageLines = [];
   };
   const flushPatch = () => {
-    if (patchLines.length > 0) hits.push(...scanAddedLines(patchLines.join("\n"), rules));
+    if (patchLines.length > 0) hits.push(...scanAddedLines(patchLines.join("\n"), rules, scanText));
     patchLines = [];
   };
 
@@ -231,7 +152,7 @@ function formatPath(path, rules) {
 }
 
 function printUsage() {
-  process.stderr.write("Usage: node scripts/privacy-scan.mjs --staged | --push <range> | --history\n");
+  process.stderr.write("Usage: node scripts/privacy-scan.mjs --staged | --push <range> | --tag <name> <sha> | --history\n");
 }
 
 function main(args) {
@@ -245,6 +166,13 @@ function main(args) {
     !args[1].startsWith("-")
   ) {
     mode = { type: "push", range: args[1] };
+  } else if (
+    args.length === 3 &&
+    args[0] === "--tag" &&
+    args[1].length > 0 &&
+    /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(args[2])
+  ) {
+    mode = { type: "tag", name: args[1], sha: args[2] };
   } else if (args.length === 1 && args[0] === "--history") {
     mode = { type: "history" };
   } else {
@@ -257,12 +185,14 @@ function main(args) {
     const rules = { deny: loadDenylist(), liveKey: loadLiveKey() };
     let hits;
     if (mode.type === "staged") {
-      const diff = runGit(["diff", "--cached", "-U0", "--no-color", "--no-ext-diff"]);
-      hits = scanAddedLines(diff, rules);
+      const diff = runGit(["diff", "--cached", "-U0", "--text", "--no-color", "--no-ext-diff"]);
+      hits = scanAddedLines(diff, rules, scanText);
     } else if (mode.type === "push") {
       const log = runGit([
         "log",
         "-p",
+        "--text",
+        "--diff-merges=first-parent",
         "--format=fuller",
         "--no-color",
         "--no-ext-diff",
@@ -271,10 +201,14 @@ function main(args) {
         "--",
       ]);
       hits = scanLogOutput(log, rules);
+    } else if (mode.type === "tag") {
+      hits = scanTagMessage(mode.name, mode.sha, rules, scanText, runGit);
     } else {
       const log = runGit([
         "log",
         "-p",
+        "--text",
+        "--diff-merges=first-parent",
         "--format=fuller",
         "--no-color",
         "--no-ext-diff",
@@ -282,7 +216,10 @@ function main(args) {
         "--all",
         "--",
       ]);
-      hits = scanLogOutput(log, rules);
+      hits = [
+        ...scanLogOutput(log, rules),
+        ...scanAllTagMessages(rules, scanText, runGit),
+      ];
     }
 
     for (const hit of hits) {
