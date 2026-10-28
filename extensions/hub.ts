@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerClaude } from "./claude.ts";
+import { registerErrors } from "./errors.ts";
 import { loadConfig, type HubConfig } from "./config.ts";
 import { fetchGatewayIds } from "./gateway.ts";
 import { matchModels, type Catalog, type MatchedModel, type Skipped } from "./models.ts";
@@ -175,6 +176,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
     return state;
   }
 
+  registerErrors(pi, state, { apiKey });
   registerSpend(pi, state, { config, apiKey, fetchImpl });
   try {
     installProvider(await discover());

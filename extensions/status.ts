@@ -25,6 +25,12 @@ const resetDateFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "UTC",
 });
 
+export function formatResetDate(resetAt: string): string | undefined {
+  const date = new Date(resetAt);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return resetDateFormatter.format(date);
+}
+
 export function newHubState(): HubState {
   return { models: [], skipped: [], sessionCost: 0, sessionEstimated: false };
 }
@@ -38,11 +44,9 @@ function spendSegment(state: HubState): string {
   const budget = state.keyBudget === undefined ? "?" : state.keyBudget.toFixed(0);
   let segment = `${window} $${state.keySpend.toFixed(2)}/$${budget}`;
   if (state.resetAt) {
-    const resetDate = new Date(state.resetAt);
-    // UTC avoids rendering a different calendar day on machines in other time zones.
-    if (!Number.isNaN(resetDate.getTime())) {
-      segment += ` (resets ${resetDateFormatter.format(resetDate)})`;
-    }
+    // The shared formatter keeps status and failure reasons on the same UTC calendar day.
+    const resetDate = formatResetDate(state.resetAt);
+    if (resetDate) segment += ` (resets ${resetDate})`;
   }
   return ` · ${segment}`;
 }

@@ -322,14 +322,15 @@ test("Claude cache markers pass through the hub request hook by reference", asyn
   assert.deepEqual(payload, original);
 });
 
-test("configured hub wires transport and Claude cache observation", async () => {
+test("configured hub wires transport, Claude cache, and error observation", async () => {
   const runtime = fakeRuntime();
   await createHub(dependencies(runtime.pi, async () => responseFor(["chat-model", "claude-model"])));
 
-  for (const event of ["before_provider_headers", "provider_stream_event", "before_provider_request"]) {
+  for (const event of ["provider_stream_event", "before_provider_request"]) {
     assert.equal(runtime.eventRegistrations.get(event)?.length, 1, `${event} handler is registered`);
   }
-  for (const event of ["after_provider_response", "message_end", "session_start"]) {
-    assert.equal(runtime.eventRegistrations.get(event)?.length, 2, `${event} hooks are composed`);
-  }
+  assert.equal(runtime.eventRegistrations.get("before_provider_headers")?.length, 2);
+  assert.equal(runtime.eventRegistrations.get("after_provider_response")?.length, 3);
+  assert.equal(runtime.eventRegistrations.get("message_end")?.length, 3);
+  assert.equal(runtime.eventRegistrations.get("session_start")?.length, 2);
 });
