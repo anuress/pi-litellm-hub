@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { matchModels, type Catalog } from "../extensions/models.ts";
 
-type Entry = { provider: string; id: string; levels?: Record<string, string | null>; compat?: Record<string, unknown> };
+type Entry = {
+  provider: string;
+  id: string;
+  levels?: Record<string, string | null>;
+  compat?: Record<string, unknown>;
+  type?: string;
+};
 
 function fakeCatalog(entries: Entry[]): Catalog {
   const providers = [...new Set(entries.map((entry) => entry.provider))];
@@ -11,10 +17,11 @@ function fakeCatalog(entries: Entry[]): Catalog {
     models: (provider) =>
       entries
         .filter((entry) => entry.provider === provider)
-        .map(({ provider: _provider, id, levels, compat }) => ({
+        .map(({ provider: _provider, id, levels, compat, type }) => ({
           id,
           name: id,
           api: "openai-completions",
+          ...(type !== undefined ? { type } : {}),
           provider,
           baseUrl: "https://litellm.example.com/v1",
           reasoning: true,
@@ -32,6 +39,15 @@ function map(value: string): Record<string, string | null> {
   return { high: value };
 }
 
+test("trims ids, drops empty values, and keeps the first duplicate", () => {
+  const result = matchModels(
+    ["gpt-6-luna", "gpt-6-luna", "", " ", " gpt-6-luna "],
+    fakeCatalog([{ provider: "openai", id: "gpt-6-luna", levels: map("max") }]),
+  );
+
+  assert.deepEqual(result.models.map((model) => model.id), ["gpt-6-luna"]);
+});
+
 test("prefers openai over Azure and OpenCode when effort maps differ", () => {
   const result = matchModels(
     ["gpt-6-luna"],
@@ -45,6 +61,19 @@ test("prefers openai over Azure and OpenCode when effort maps differ", () => {
   assert.equal(result.models[0].catalogSource, "openai");
   assert.equal(result.models[0].levels?.max, "max");
   assert.equal(result.models[0].reason, undefined);
+});
+
+test("checks chat type only on the priority-chosen entry", () => {
+  const result = matchModels(
+    ["x"],
+    fakeCatalog([
+      { provider: "openai", id: "x", levels: map("chat"), type: "chat" },
+      { provider: "opencode", id: "x", levels: map("image"), type: "image" },
+    ]),
+  );
+
+  assert.equal(result.models[0].catalogSource, "openai");
+  assert.deepEqual(result.skipped, []);
 });
 
 test("prefers the vendor catalog over OpenRouter and Nvidia", () => {

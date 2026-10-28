@@ -1,7 +1,6 @@
-import packageInfo from "../package.json" with { type: "json" };
-import type { HubConfig } from "./config.ts";
-import { redact } from "./redact.ts";
 import { thinkingFor } from "./thinking.ts";
+
+export { fetchGatewayIds } from "./gateway.ts";
 
 export type Protocol = "anthropic-messages" | "openai-responses" | "openai-completions";
 
@@ -46,7 +45,6 @@ const VENDOR_PROVIDER_HINTS: Record<string, string> = {
   google: "google",
   gemini: "google",
 };
-const USER_AGENT = `pi-litellm-hub/${packageInfo.version}`;
 const NON_CHAT_ID = /embedding|rerank|voyage|chirp|image|tts|whisper/i;
 const NON_CHAT_REASON = "not a chat model";
 
@@ -189,13 +187,14 @@ export function matchModels(
   ids: string[],
   catalog: Catalog,
 ): { models: MatchedModel[]; skipped: Skipped[] } {
+  const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
   const providers = catalog.providers();
   const entries = catalogEntries(catalog, providers);
   const ranks = providerRanks(providers);
   const models: MatchedModel[] = [];
   const skipped: Skipped[] = [];
 
-  for (const id of ids) {
+  for (const id of uniqueIds) {
     const { candidates, vendorProviders } = candidatesForId(id, providers, entries);
     if (candidates.length === 0) {
       // Known media/embedding names are not safe guesses for chat models.
@@ -204,14 +203,13 @@ export function matchModels(
       continue;
     }
 
+    const preferred = preferredCandidates(candidates, vendorProviders, ranks);
+    const first = preferred[0];
     // A matching image or classifier entry must never be registered as chat.
-    if (candidates.some(({ model }) => model.type !== undefined && model.type !== "chat")) {
+    if (first.model.type !== undefined && first.model.type !== "chat") {
       skipped.push({ id, reason: NON_CHAT_REASON });
       continue;
     }
-
-    const preferred = preferredCandidates(candidates, vendorProviders, ranks);
-    const first = preferred[0];
     // Only equal-priority entries can be ambiguous; lower-priority maps are ignored.
     const ambiguous = preferred.some(
       ({ model }) => !deepEqual(model.thinkingLevelMap, first.model.thinkingLevelMap),
@@ -232,69 +230,4 @@ export function matchModels(
   }
 
   return { models, skipped };
-}
-
-function errorMessage(error: unknown): string {
-  // Preserve useful native failure text; callers redact it before constructing an Error.
-  return error instanceof Error ? error.message : String(error);
-}
-
-export async function fetchGatewayIds(
-  cfg: HubConfig,
-  apiKey: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<string[]> {
-  // Normalize a trailing slash so the configured gateway root yields one /v1 segment.
-  const baseUrl = cfg.baseUrl.replace(/\/+$/, "");
-  let response: Response;
-  try {
-    response = await fetchImpl(`${baseUrl}/v1/models`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "User-Agent": USER_AGENT,
-      },
-      redirect: "manual",
-    });
-  } catch (error) {
-    // Fetch errors may include request details, so sanitize the message with the caller's key.
-    throw new Error(redact(`gateway /v1/models request failed: ${errorMessage(error)}`, apiKey));
-  }
-
-  // Never follow or accept redirects for a credential-bearing catalog request.
-  if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
-    throw new Error(redact("redirect refused (3xx)", apiKey));
-  }
-
-  // Report bounded response text on failures, after redaction below.
-  if (response.status < 200 || response.status >= 300) {
-    let body = "";
-    try {
-      body = await response.text();
-    } catch {
-      // The status remains useful even if a failed response body cannot be read.
-    }
-    throw new Error(
-      redact(`gateway /v1/models returned ${response.status}: ${body.slice(0, 200)}`, apiKey),
-    );
-  }
-
-  // A malformed success body is a gateway failure, not an empty catalog.
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    throw new Error(
-      redact(`gateway /v1/models returned invalid JSON: ${errorMessage(error)}`, apiKey),
-    );
-  }
-
-  // A successful response without the documented data list is malformed, not an empty catalog.
-  if (!isRecord(payload) || !Array.isArray(payload.data)) {
-    throw new Error(redact("gateway /v1/models returned an invalid model list", apiKey));
-  }
-  // Ignore malformed entries while retaining every string model id from the data list.
-  return payload.data.flatMap((item: unknown) =>
-    isRecord(item) && typeof item.id === "string" ? [item.id] : [],
-  );
 }
