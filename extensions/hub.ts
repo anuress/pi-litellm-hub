@@ -5,7 +5,14 @@ import { loadConfig, type HubConfig } from "./config.ts";
 import { fetchGatewayIds } from "./gateway.ts";
 import { matchModels, type Catalog, type MatchedModel, type Skipped } from "./models.ts";
 import { redact } from "./redact.ts";
-import { newHubState, renderModelReport, updateStatus, type HubState } from "./status.ts";
+import {
+  bindStatus,
+  hubSnapshot,
+  newHubState,
+  renderModelReport,
+  updateStatus,
+  type HubState,
+} from "./status.ts";
 import { resolveKeyRef } from "./keyref.ts";
 import { registerTransport } from "./transport.ts";
 import { registerSpend } from "./spend.ts";
@@ -21,10 +28,10 @@ export type HubDependencies = {
 
 type Discovery = { models: MatchedModel[]; skipped: Skipped[] };
 
-function errorText(error: unknown, key?: string): string {
+function errorText(error: unknown, key?: string, host?: string): string {
   try {
     const message = error instanceof Error ? error.message : String(error);
-    return redact(message || "gateway request failed", key);
+    return redact(message || "gateway request failed", key, host);
   } catch {
     return "gateway request failed";
   }
@@ -40,17 +47,23 @@ function providerModels(models: MatchedModel[], config: HubConfig): any[] {
 
 export async function createHub(deps: HubDependencies): Promise<HubState> {
   const { pi, env, home, fetchImpl, catalog, resolveKey } = deps;
-  const state = newHubState();
-  registerTransport(pi, state);
   let config: HubConfig | undefined;
   let apiKey: string | undefined;
+  let host: string | undefined;
+  const state = newHubState();
+  const emit = (channel: string, data: unknown) => pi.events.emit(channel, data);
+  bindStatus(state, { key: apiKey, host, emit });
+  pi.events.on("litellm-hub:request", () => {
+    emit("litellm-hub:state", hubSnapshot(state, { key: apiKey, host }));
+  });
+  registerTransport(pi, state);
 
   const notify = (
     ctx: Pick<ExtensionContext, "ui" | "hasUI">,
     message: string,
     type: "info" | "warning" | "error" = "info",
   ) => {
-    if (ctx.hasUI) ctx.ui.notify(redact(message, apiKey), type);
+    if (ctx.hasUI) ctx.ui.notify(redact(message, apiKey, host), type);
   };
 
   const selectModel = (model: { id?: string; provider?: string } | undefined, thinking?: string) => {
@@ -93,7 +106,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
           refreshed = await discover(signal);
         } catch (error) {
           if (signal.aborted) throw new Error("gateway refresh aborted");
-          const reason = errorText(error, apiKey);
+          const reason = errorText(error, apiKey, host);
           state.reason = reason;
           throw new Error(reason);
         }
@@ -120,7 +133,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
       updateStatus(ctx, state, apiKey);
       notify(ctx, `refreshed: ${result.models.length} models`);
     } catch (error) {
-      state.reason = errorText(error, apiKey);
+      state.reason = errorText(error, apiKey, host);
       updateStatus(ctx, state, apiKey);
       notify(ctx, `refresh failed: ${state.reason}`, "error");
     }
@@ -164,6 +177,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
   }
 
   config = loaded.config;
+  host = new URL(config.baseUrl).hostname;
   state.config = config;
   registerClaude(pi, state);
   try {
@@ -171,6 +185,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
   } catch {
     apiKey = undefined;
   }
+  bindStatus(state, { key: apiKey, host, emit });
   if (!apiKey) {
     state.notConfigured = "no key";
     return state;
@@ -181,7 +196,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
   try {
     installProvider(await discover());
   } catch (error) {
-    state.reason = errorText(error, apiKey);
+    state.reason = errorText(error, apiKey, host);
   }
   return state;
 }

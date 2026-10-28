@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { redact } from "./redact.ts";
-import { formatResetDate, updateStatus, type HubState } from "./status.ts";
+import { formatResetDate, publishFailure, updateStatus, type HubState } from "./status.ts";
 
 const MAX_REASON_LENGTH = 120;
 const MAX_ERROR_TEXT_LENGTH = 4_000;
@@ -243,6 +243,7 @@ export function registerErrors(
       const reason = redact(redactKeyHashes(rawReason), deps.apiKey);
       state.reason = reason;
       ownedReason = reason;
+      publishFailure(state, message.model, reason);
       updateStatus(ctx, state, deps.apiKey);
       return;
     }

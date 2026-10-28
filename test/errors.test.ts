@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { classifyFailure, registerErrors, shortMessage } from "../extensions/errors.ts";
-import { newHubState } from "../extensions/status.ts";
+import { bindStatus, newHubState } from "../extensions/status.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -292,10 +292,14 @@ test("a successful reply does not clear a reason another observer replaced", () 
   assert.equal(state.reason, "cache warning from another observer");
 });
 
-test("non-LiteLLM provider errors do not change status state", () => {
+test("non-LiteLLM provider errors do not change status state or publish failures", () => {
   const { pi, handlers } = fakeRuntime();
   const state = newHubState();
+  const failures: unknown[] = [];
   state.reason = "keep this reason";
+  bindStatus(state, { emit: (channel, data) => {
+    if (channel === "litellm-hub:failure") failures.push(data);
+  } });
   registerErrors(pi, state, { apiKey: fakeKey });
   const { ctx, statuses } = fakeContext("openai");
 
@@ -303,6 +307,34 @@ test("non-LiteLLM provider errors do not change status state", () => {
 
   assert.equal(state.reason, "keep this reason");
   assert.equal(statuses.length, 0);
+  assert.equal(failures.length, 0);
+});
+
+test("classified LiteLLM failures publish model and redacted reason", () => {
+  const { pi, handlers } = fakeRuntime();
+  const state = newHubState();
+  const emitted: Array<{ channel: string; data: unknown }> = [];
+  const host = "litellm.example.com";
+  bindStatus(state, {
+    key: fakeKey,
+    host,
+    emit: (channel, data) => emitted.push({ channel, data }),
+  });
+  registerErrors(pi, state, { apiKey: fakeKey });
+  const { ctx } = fakeContext();
+
+  handlers.get("after_provider_response")?.[0]({ status: 200, headers: {} }, ctx);
+  emitMessage(handlers, ctx, assistant("error", `request failed at ${host} with ${fakeKey}`));
+
+  const failures = emitted.filter(({ channel }) => channel === "litellm-hub:failure");
+  assert.equal(failures.length, 1);
+  const failure = failures[0].data as { model: string; reason: string; at: string };
+  assert.equal(failure.model, "model-test");
+  assert.equal(failure.reason, "failed: gateway error inside a 200 response: request failed at <gateway> with sk-***");
+  assert.equal(failure.reason.includes(fakeKey), false);
+  assert.equal(failure.reason.includes(host), false);
+  assert.ok(!Number.isNaN(Date.parse(failure.at)));
+  assert.deepEqual(emitted.map(({ channel }) => channel), ["litellm-hub:failure", "litellm-hub:state"]);
 });
 
 test("an HTTP budget error uses its status prefix when after_provider_response does not fire", () => {

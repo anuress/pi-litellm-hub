@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { newHubState, renderModelReport, renderStatus, updateStatus } from "../extensions/status.ts";
+import {
+  bindStatus,
+  hubSnapshot,
+  newHubState,
+  renderModelReport,
+  renderStatus,
+  updateStatus,
+} from "../extensions/status.ts";
 
 const spend = {
   keySpend: 74.73,
@@ -89,8 +96,8 @@ test("model report lists default thinking and skipped model reasons", () => {
   assert.match(report, /Skipped:\n- text-embedding-model — not a chat model/);
 });
 
-test("updateStatus redacts a key embedded in a status reason", () => {
-  const fakeKey = ["fake", "gateway", "key"].join("-");
+test("updateStatus redacts a key embedded in the status reason", () => {
+  const fakeKey = ["sk", "abcdefgh12"].join("-");
   const state = activeState({ reason: `request failed: ${fakeKey}` });
   let status = "";
 
@@ -98,4 +105,70 @@ test("updateStatus redacts a key embedded in a status reason", () => {
 
   assert.equal(status.includes(fakeKey), false);
   assert.equal(status, "litellm · model-one · request failed: sk-***");
+});
+
+test("snapshot uses an exact allowlist and redacts its reason", () => {
+  const fakeKey = ["sk", "abcdefgh12"].join("-");
+  const host = "litellm.example.com";
+  const state = activeState({ reason: `failed at https://${host} with ${fakeKey}` });
+  state.models.push({
+    id: "model-one",
+    api: "openai-responses",
+    levels: { low: "low", off: null },
+    model: {},
+  });
+
+  const snapshot = hubSnapshot(state, { key: fakeKey, host });
+
+  assert.deepEqual(Object.keys(snapshot).sort(), [
+    "at",
+    "configured",
+    "keyBudget",
+    "keySpend",
+    "lastCache",
+    "levelsAvailable",
+    "model",
+    "modelsMatched",
+    "modelsSkipped",
+    "reason",
+    "resetAt",
+    "sessionCost",
+    "sessionEstimated",
+    "thinkingLevel",
+    "window",
+  ]);
+  assert.deepEqual(snapshot.levelsAvailable, ["low"]);
+  assert.equal(snapshot.configured, true);
+  const serialized = JSON.stringify(snapshot);
+  assert.equal(serialized.includes(fakeKey), false);
+  assert.equal(serialized.includes(host), false);
+  assert.match(serialized, /<gateway>/);
+});
+
+test("snapshot leaves levels undefined when the active model has no map", () => {
+  const state = activeState();
+
+  assert.equal(hubSnapshot(state, {}).levelsAvailable, undefined);
+});
+
+test("updateStatus emits once and uses bound key and host when no key is passed", () => {
+  const fakeKey = ["sk", "abcdefgh12"].join("-");
+  const host = "litellm.example.com";
+  const state = activeState({ reason: `failed at ${host} with ${fakeKey}` });
+  const emitted: Array<{ channel: string; data: unknown }> = [];
+  let status = "";
+  bindStatus(state, {
+    key: fakeKey,
+    host,
+    emit: (channel, data) => emitted.push({ channel, data }),
+  });
+
+  updateStatus({ ui: { setStatus: (_key, text) => (status = text ?? "") } }, state);
+
+  assert.equal(status.includes(fakeKey), false);
+  assert.equal(status.includes(host), false);
+  assert.match(status, /<gateway>/);
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0].channel, "litellm-hub:state");
+  assert.equal((emitted[0].data as { reason?: string }).reason, `failed at <gateway> with sk-***`);
 });

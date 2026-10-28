@@ -19,6 +19,65 @@ export type HubState = {
   notConfigured?: string;
 };
 
+type StatusBinding = {
+  key?: string;
+  host?: string;
+  emit?: (channel: string, data: unknown) => void;
+};
+
+// Keep secrets and the event publisher outside HubState, whose fields are otherwise easy to spread.
+const statusBindings = new WeakMap<HubState, StatusBinding>();
+
+export function bindStatus(state: HubState, binding: StatusBinding): void {
+  statusBindings.set(state, binding);
+}
+
+export function hubSnapshot(
+  state: HubState,
+  binding: Pick<StatusBinding, "key" | "host">,
+) {
+  const activeModel = state.models.find((model) => model.id === state.activeModelId);
+  const levels = activeModel?.levels;
+  const reason = state.reason ?? state.notConfigured;
+  // Model metadata and error strings are external text, so sanitize every published string field.
+  const safeText = (value: string | undefined) =>
+    value === undefined ? undefined : redact(value, binding.key, binding.host);
+
+  // Keep the event shape explicit: HubState also contains config, including the gateway URL.
+  return {
+    configured: !state.notConfigured,
+    model: safeText(state.activeModelId),
+    thinkingLevel: safeText(state.thinking),
+    levelsAvailable: levels === undefined
+      ? undefined
+      : Object.keys(levels)
+          .filter((level) => levels[level] !== null)
+          .map((level) => redact(level, binding.key, binding.host)),
+    reason: safeText(reason),
+    sessionCost: state.sessionCost,
+    sessionEstimated: state.sessionEstimated,
+    keySpend: state.keySpend,
+    keyBudget: state.keyBudget,
+    resetAt: safeText(state.resetAt),
+    window: safeText(state.window),
+    lastCache: safeText(state.lastCache),
+    modelsMatched: state.models.length,
+    modelsSkipped: state.skipped.length,
+    at: new Date().toISOString(),
+  };
+}
+
+export function publishFailure(state: HubState, model: string | undefined, reason: string): void {
+  const binding = statusBindings.get(state);
+  if (!binding?.emit) return;
+
+  binding.emit("litellm-hub:failure", {
+    model: model === undefined ? undefined : redact(model, binding.key, binding.host),
+    reason: redact(reason, binding.key, binding.host),
+    at: new Date().toISOString(),
+  });
+}
+
 const resetDateFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
@@ -101,5 +160,8 @@ export function updateStatus(
   state: HubState,
   key?: string,
 ): void {
-  ctx.ui.setStatus("litellm", redact(renderStatus(state), key));
+  const binding = statusBindings.get(state);
+  const statusKey = key === undefined ? binding?.key : key;
+  ctx.ui.setStatus("litellm", redact(renderStatus(state), statusKey, binding?.host));
+  binding?.emit?.("litellm-hub:state", hubSnapshot(state, binding));
 }

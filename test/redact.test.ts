@@ -23,6 +23,22 @@ test("removes URL userinfo", () => {
   );
 });
 
+test("redacts gateway host occurrences case-insensitively", () => {
+  assert.equal(
+    redact("Request to LITELLM.EXAMPLE.COM failed", undefined, "litellm.example.com"),
+    "Request to <gateway> failed",
+  );
+});
+
+test("leaves text without the gateway host unchanged", () => {
+  const text = "The gateway returned a temporary error.";
+  assert.equal(redact(text, undefined, "litellm.example.com"), text);
+});
+
+test("ignores gateway hosts shorter than four characters", () => {
+  assert.equal(redact("gateway host api unavailable", undefined, "api"), "gateway host api unavailable");
+});
+
 test("leaves text without secrets unchanged", () => {
   const text = "The gateway returned a temporary error.";
   assert.equal(redact(text), text);

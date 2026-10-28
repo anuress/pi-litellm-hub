@@ -3,7 +3,7 @@ import test from "node:test";
 import { createHub } from "../extensions/hub.ts";
 import type { Catalog } from "../extensions/models.ts";
 
-const fakeKey = ["fake", "gateway", "secret"].join("-");
+const fakeKey = ["sk", "abcdefgh12"].join("-");
 const baseUrl = "https://litellm.example.com";
 const env = { LITELLM_BASE_URL: baseUrl, LITELLM_API_KEY: fakeKey };
 
@@ -45,9 +45,22 @@ function fakeRuntime() {
   const providers: Array<{ name: string; config: any }> = [];
   const commands = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
   type Handler = (event: any, ctx: any) => any;
+  type SharedHandler = (data: unknown) => void;
   const events = new Map<string, Handler>();
   const eventRegistrations = new Map<string, Handler[]>();
+  const sharedEvents = new Map<string, Set<SharedHandler>>();
   const pi = {
+    events: {
+      emit: (channel: string, data: unknown) => {
+        for (const handler of sharedEvents.get(channel) ?? []) handler(data);
+      },
+      on: (channel: string, handler: SharedHandler) => {
+        const handlers = sharedEvents.get(channel) ?? new Set<SharedHandler>();
+        handlers.add(handler);
+        sharedEvents.set(channel, handlers);
+        return () => handlers.delete(handler);
+      },
+    },
     registerProvider: (name: string, config: any) => providers.push({ name, config }),
     registerCommand: (name: string, definition: { handler: (args: string, ctx: any) => Promise<void> | void }) =>
       commands.set(name, definition.handler),
@@ -66,7 +79,7 @@ function fakeRuntime() {
       return () => events.delete(event);
     },
   };
-  return { pi, providers, commands, events, eventRegistrations };
+  return { pi, providers, commands, events, eventRegistrations, sharedEvents };
 }
 
 function fakeContext() {
@@ -105,7 +118,7 @@ function dependencies(
   };
 }
 
-test("an unconfigured hub never registers a provider and shows its status", async () => {
+test("an unconfigured hub answers state requests with configured false", async () => {
   const runtime = fakeRuntime();
   let fetched = false;
   const fetchImpl: typeof fetch = async () => {
@@ -121,6 +134,12 @@ test("an unconfigured hub never registers a provider and shows its status", asyn
   assert.equal(runtime.providers.length, 0);
   assert.equal(fetched, false);
   assert.equal(statuses.at(-1)?.text, "litellm · not configured: no gateway URL");
+  const snapshots: Array<{ configured: boolean; reason?: string }> = [];
+  runtime.pi.events.on("litellm-hub:state", (snapshot) => snapshots.push(snapshot as typeof snapshots[number]));
+  runtime.pi.events.emit("litellm-hub:request", undefined);
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].configured, false);
+  assert.equal(snapshots[0].reason, "no gateway URL");
 });
 
 test("configured startup registers reference auth and only same-gateway model URLs", async () => {
@@ -280,6 +299,56 @@ test("the report command includes catalog details and the latest Claude cache us
   assert.match(notifications.at(-1)?.message ?? "", /chat-model \| openai-responses \| pi default \| openai/);
   assert.match(notifications.at(-1)?.message ?? "", /Last Claude cache: cache: hit \(read 10\.3k\)/);
   assert.match(notifications.at(-1)?.message ?? "", /text-embedding-model — not a chat model/);
+});
+
+test("hub notifications redact the gateway host", async () => {
+  const runtime = fakeRuntime();
+  const state = await createHub(dependencies(runtime.pi, async () => responseFor(["chat-model"])));
+  state.skipped.push({ id: "unavailable-model", reason: "upstream at LITELLM.EXAMPLE.COM unavailable" });
+  const { ctx, notifications } = fakeContext();
+
+  await runtime.commands.get("litellm")?.("", ctx);
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].message.includes("litellm.example.com"), false);
+  assert.match(notifications[0].message, /<gateway>/);
+});
+
+test("state requests publish the current allowlisted, redacted snapshot", async () => {
+  const runtime = fakeRuntime();
+  const state = await createHub(dependencies(runtime.pi, async () => responseFor(["chat-model"])));
+  state.activeModelId = "chat-model";
+  state.thinking = "high";
+  state.reason = `request failed at LITELLM.EXAMPLE.COM with ${fakeKey}`;
+  const snapshots: unknown[] = [];
+  runtime.pi.events.on("litellm-hub:state", (snapshot) => snapshots.push(snapshot));
+
+  runtime.pi.events.emit("litellm-hub:request", undefined);
+
+  assert.equal(snapshots.length, 1);
+  const snapshot = snapshots[0] as Record<string, unknown>;
+  assert.deepEqual(Object.keys(snapshot).sort(), [
+    "at",
+    "configured",
+    "keyBudget",
+    "keySpend",
+    "lastCache",
+    "levelsAvailable",
+    "model",
+    "modelsMatched",
+    "modelsSkipped",
+    "reason",
+    "resetAt",
+    "sessionCost",
+    "sessionEstimated",
+    "thinkingLevel",
+    "window",
+  ]);
+  assert.equal(snapshot.model, "chat-model");
+  assert.equal(snapshot.reason, "request failed at <gateway> with sk-***");
+  const serialized = JSON.stringify(snapshot);
+  assert.equal(serialized.includes(fakeKey), false);
+  assert.equal(serialized.includes("litellm.example.com"), false);
 });
 
 test("model and thinking selection events keep the status current", async () => {
