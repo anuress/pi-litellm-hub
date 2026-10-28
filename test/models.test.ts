@@ -290,3 +290,27 @@ test("rejects a successful response without the documented data list", async () 
     /invalid model list/,
   );
 });
+
+test("never inherits catalog transport fields such as compat and promptCache", () => {
+  const compat = {
+    supportsStrictMode: true,
+    supportsOpenAIGrammarTools: true,
+    supportsAdditionalTools: true,
+    supportsToolSearch: true,
+    supportsMidConvoSystemMessages: true,
+    supportsExplicitPromptCacheMode: true,
+    supportsMidConvoEffort: true,
+  };
+  const result = matchModels(
+    ["gpt-6-luna"],
+    fakeCatalog([
+      { provider: "openai", model: catalogModel({ compat, promptCache: { mode: "explicit" }, headers: { a: "b" } }) },
+    ]),
+  );
+  const model = result.models[0].model;
+
+  assert.deepEqual(Object.keys(model).sort(), [
+    "api", "contextWindow", "cost", "id", "input", "maxTokens", "name", "reasoning", "thinkingLevelMap",
+  ]);
+  assert.deepEqual(model.thinkingLevelMap, efforts);
+});

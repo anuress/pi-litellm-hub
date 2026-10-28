@@ -166,16 +166,11 @@ function modelConfig(
   api: Protocol,
   levels: Record<string, string | null> | undefined,
 ): Record<string, unknown> {
-  // Provider identity and endpoint belong to the provider registration, not its model config.
+  // Allowlist only: catalog compat/promptCache describe OpenAI-direct transport features the gateway does not forward.
   const copied = Object.fromEntries(
-    Object.entries(catalogModel).filter(
-      ([key]) =>
-        key !== "provider" &&
-        key !== "baseUrl" &&
-        key !== "thinkingLevelMap" &&
-        key !== "id" &&
-        key !== "api",
-    ),
+    ["name", "reasoning", "input", "cost", "contextWindow", "maxTokens"]
+      .filter((key) => key in catalogModel)
+      .map((key) => [key, catalogModel[key]]),
   );
   const result: Record<string, unknown> = { ...copied, id, api };
   // Never preserve a catalog map when thinkingFor did not approve levels.
