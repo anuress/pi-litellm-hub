@@ -245,16 +245,32 @@ test("a failed refresh retains the prior catalog and redacts its notification", 
   assert.equal(notifications.at(-1)?.message.includes(fakeKey), false);
 });
 
-test("the report command notifies with the matched catalog details", async () => {
+test("the report command includes catalog details and the latest Claude cache usage", async () => {
   const runtime = fakeRuntime();
   const fetchImpl: typeof fetch = async () => responseFor(["chat-model", "text-embedding-model"]);
   await createHub(dependencies(runtime.pi, fetchImpl));
   const { ctx, notifications } = fakeContext();
+  const claudeCtx = {
+    ...ctx,
+    model: { provider: "litellm", api: "anthropic-messages", id: "claude-model" },
+  };
 
+  runtime.events.get("message_end")?.(
+    {
+      message: {
+        role: "assistant",
+        provider: "litellm",
+        api: "anthropic-messages",
+        usage: { cacheRead: 10278, cacheWrite: 0 },
+      },
+    },
+    claudeCtx,
+  );
   await runtime.commands.get("litellm")?.("", ctx);
 
   assert.match(notifications.at(-1)?.message ?? "", /1 matched, 1 skipped/);
   assert.match(notifications.at(-1)?.message ?? "", /chat-model \| openai-responses \| pi default \| openai/);
+  assert.match(notifications.at(-1)?.message ?? "", /Last Claude cache: cache: hit \(read 10\.3k\)/);
   assert.match(notifications.at(-1)?.message ?? "", /text-embedding-model — not a chat model/);
 });
 
@@ -278,7 +294,27 @@ test("model and thinking selection events keep the status current", async () => 
   assert.match(statuses.at(-1)?.text ?? "", /thinking off/);
 });
 
-test("configured hub wires request transport and Claude cache hooks", async () => {
+test("Claude cache markers pass through the hub request hook by reference", async () => {
+  const runtime = fakeRuntime();
+  await createHub(dependencies(runtime.pi, async () => responseFor(["claude-model"])));
+  const payload = {
+    system: [{ type: "text", text: "Rules", cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: [{ type: "text", text: "Hi", cache_control: { type: "ephemeral" } }] }],
+  };
+  const original = structuredClone(payload);
+  const ctx = {
+    ...fakeContext().ctx,
+    model: { provider: "litellm", api: "anthropic-messages", id: "claude-model" },
+  };
+  const beforeRequest = runtime.events.get("before_provider_request");
+
+  const result = beforeRequest?.({ payload }, ctx);
+
+  assert.equal(result, payload);
+  assert.deepEqual(payload, original);
+});
+
+test("configured hub wires transport and Claude cache observation", async () => {
   const runtime = fakeRuntime();
   await createHub(dependencies(runtime.pi, async () => responseFor(["chat-model", "claude-model"])));
 
@@ -289,5 +325,5 @@ test("configured hub wires request transport and Claude cache hooks", async () =
   ]) {
     assert.equal(runtime.eventRegistrations.get(event)?.length, 1, `${event} handler is registered`);
   }
-  assert.equal(runtime.eventRegistrations.get("before_provider_request")?.length, 2);
+  assert.equal(runtime.eventRegistrations.get("before_provider_request")?.length, 1);
 });

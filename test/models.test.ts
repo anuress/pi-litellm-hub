@@ -223,7 +223,7 @@ test("normalizes Azure Responses and falls back for unsupported catalog APIs", (
 });
 
 test("rejects HTTP and opaque gateway redirects", async () => {
-  const cfg = { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY", claudeCache: false };
+  const cfg = { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" };
   const responses = [new Response("", { status: 302 }), { status: 0, type: "opaqueredirect" } as Response];
   for (const response of responses) {
     const fetchImpl: typeof fetch = async () => response;
@@ -238,7 +238,7 @@ test("redacts the API key from a gateway error body", async () => {
 
   await assert.rejects(
     fetchGatewayIds(
-      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY", claudeCache: false },
+      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" },
       apiKey,
       fetchImpl,
     ),
@@ -263,7 +263,7 @@ test("fetches gateway model ids with manual redirects and the package user agent
   };
 
   const ids = await fetchGatewayIds(
-    { baseUrl: "https://litellm.example.com/", apiKeyRef: "$LITELLM_API_KEY", claudeCache: false },
+    { baseUrl: "https://litellm.example.com/", apiKeyRef: "$LITELLM_API_KEY" },
     fakeApiKey,
     fetchImpl,
   );
@@ -283,7 +283,7 @@ test("rejects a successful response without the documented data list", async () 
 
   await assert.rejects(
     fetchGatewayIds(
-      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY", claudeCache: false },
+      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" },
       fakeApiKey,
       fetchImpl,
     ),

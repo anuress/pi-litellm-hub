@@ -1,30 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { HubConfig } from "./config.ts";
 import type { HubState } from "./status.ts";
 import { updateStatus } from "./status.ts";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  // Arrays and null cannot have named Claude request properties.
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stripCacheControl(value: unknown): unknown {
-  // Traverse the complete request, including tools and nested message content.
-  if (Array.isArray(value)) return value.map(stripCacheControl);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key]) => key !== "cache_control")
-      .map(([key, nested]) => [key, stripCacheControl(nested)]),
-  );
-}
-
-export function applyClaudeCache(payload: unknown, on: boolean): unknown {
-  // pi-ai adds up to four system, conversation, and tool breakpoints; another may exceed Anthropic's limit.
-  if (on) return payload;
-  // Recursively clear all markers so disabled caching cannot write cache via any payload field.
-  return stripCacheControl(payload);
-}
+const CACHE_MISS_REASON = "cache: missed 2 turns in row (gateway caching may be off)";
 
 function formatTokens(tokens: number): string {
   // Keep sub-thousand counts exact and show larger counts compactly to one decimal place.
@@ -46,43 +24,40 @@ export function cacheReason(usage: {
   return undefined;
 }
 
-export function registerClaude(pi: ExtensionAPI, state: HubState, cfg: HubConfig): void {
-  pi.on("before_provider_request", (event, ctx) => {
-    // The Anthropic cache format must not leak into another provider or LiteLLM API.
-    if (ctx.model?.provider !== "litellm" || ctx.model.api !== "anthropic-messages") return;
-    return applyClaudeCache(event.payload, cfg.claudeCache && !state.claudeCacheDisabled);
-  });
+export function registerClaude(pi: ExtensionAPI, state: HubState): void {
+  let consecutiveMisses = 0;
 
   pi.on("message_end", (event, ctx) => {
     const message = event.message;
-    // Use the request's model context so error responses still get handled when message metadata is incomplete.
-    if (ctx.model?.provider !== "litellm" || ctx.model.api !== "anthropic-messages") return;
+    if (message.role !== "assistant") return;
+
+    // Any other assistant model breaks the sequence of consecutive LiteLLM Claude turns.
     if (
-      message.role !== "assistant" ||
+      ctx.model?.provider !== "litellm" ||
+      ctx.model.api !== "anthropic-messages" ||
       message.provider !== "litellm" ||
       message.api !== "anthropic-messages"
-    ) return;
-
-    // Ignore cache rejections when caching was off already or has been disabled before.
-    const cachingEnabled = cfg.claudeCache && !state.claudeCacheDisabled;
-    if (
-      cachingEnabled &&
-      message.stopReason === "error" &&
-      message.errorMessage?.toLowerCase().includes("cache_control")
     ) {
-      // Store a fixed reason instead of exposing the provider's error text.
-      state.claudeCacheDisabled = true;
-      state.reason = "cache: rejected by gateway, caching off for this session";
-      updateStatus(ctx, state);
+      consecutiveMisses = 0;
       return;
     }
 
-    // Report cache token usage only when this session was configured to send cache controls.
-    if (!cachingEnabled) return;
-    const reason = cacheReason(message.usage);
-    if (reason) {
-      state.reason = reason;
-      updateStatus(ctx, state);
+    const usage = message.usage;
+    state.lastCache = cacheReason(usage);
+    const isHit = usage.cacheRead > 0;
+    const isMiss = usage.cacheWrite > 0 && usage.cacheRead === 0;
+    if (isHit) {
+      consecutiveMisses = 0;
+      // Clear only this observer's warning once the gateway reports a real cache hit.
+      if (state.reason === CACHE_MISS_REASON) state.reason = undefined;
+    } else if (isMiss) {
+      consecutiveMisses += 1;
+      if (consecutiveMisses >= 2) state.reason = CACHE_MISS_REASON;
+    } else {
+      // A Claude turn without a hit or miss also breaks the consecutive-miss streak.
+      consecutiveMisses = 0;
     }
+
+    updateStatus(ctx, state);
   });
 }

@@ -134,7 +134,10 @@ test("uses an environment variable reference when the key is configured", () => 
   withHome((home) => {
     const result = configFor(home);
     assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.config.apiKeyRef, "$LITELLM_API_KEY");
+    if (result.ok) {
+      assert.equal(result.config.apiKeyRef, "$LITELLM_API_KEY");
+      assert.deepEqual(Object.keys(result.config).sort(), ["apiKeyRef", "baseUrl"]);
+    }
   });
 });
 
@@ -207,22 +210,6 @@ test("ignores a project-local pi settings file", () => {
     process.chdir(previousCwd);
     rmSync(cwd, { recursive: true, force: true });
   }
-});
-
-test("claudeCache defaults to false and accepts true", () => {
-  withHome((home) => {
-    writeSettings(home, { litellmHub: { baseUrl: "https://litellm.example.com" } });
-    const withoutCache = loadConfig({ LITELLM_API_KEY: "sk-test" }, home);
-    assert.equal(withoutCache.ok, true);
-    if (withoutCache.ok) assert.equal(withoutCache.config.claudeCache, false);
-
-    writeSettings(home, {
-      litellmHub: { baseUrl: "https://litellm.example.com", claudeCache: true },
-    });
-    const withCache = loadConfig({ LITELLM_API_KEY: "sk-test" }, home);
-    assert.equal(withCache.ok, true);
-    if (withCache.ok) assert.equal(withCache.config.claudeCache, true);
-  });
 });
 
 test("treats malformed settings JSON as absent", () => {

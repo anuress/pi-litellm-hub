@@ -78,12 +78,14 @@ test("model report lists default thinking and skipped model reasons", () => {
       },
     ],
     skipped: [{ id: "text-embedding-model", reason: "not a chat model" }],
+    lastCache: "cache: hit (read 10.3k)",
   });
   const report = renderModelReport(state);
 
   assert.match(report, /2 matched, 1 skipped/);
   assert.match(report, /plain-model \| openai-responses \| pi default \| openai/);
   assert.match(report, /reasoning-model \| anthropic-messages \| low, high \| anthropic/);
+  assert.match(report, /Last Claude cache: cache: hit \(read 10\.3k\)/);
   assert.match(report, /Skipped:\n- text-embedding-model — not a chat model/);
 });
 

@@ -4,7 +4,6 @@ import { join } from "node:path";
 export type HubConfig = {
   baseUrl: string;
   apiKeyRef: string;
-  claudeCache: boolean;
 };
 
 type BaseUrlResult =
@@ -125,7 +124,6 @@ export function loadConfig(
     config: {
       baseUrl: baseUrlResult.baseUrl,
       apiKeyRef,
-      claudeCache: hubSettings?.claudeCache === true,
     },
   };
 }

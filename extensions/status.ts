@@ -13,7 +13,7 @@ export type HubState = {
   sessionEstimated: boolean;
   keySpend?: number;
   keyBudget?: number;
-  claudeCacheDisabled?: boolean;
+  lastCache?: string;
   resetAt?: string;
   window?: string;
   notConfigured?: string;
@@ -83,6 +83,8 @@ export function renderModelReport(state: HubState): string {
     if (model.reason) fields.push(model.reason);
     lines.push(`- ${fields.join(" | ")}`);
   }
+
+  if (state.lastCache !== undefined) lines.push(`Last Claude cache: ${state.lastCache}`);
 
   lines.push("Skipped:");
   if (state.skipped.length === 0) lines.push("- none");

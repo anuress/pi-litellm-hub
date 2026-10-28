@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { applyClaudeCache, cacheReason, registerClaude } from "../extensions/claude.ts";
-import type { HubConfig } from "../extensions/config.ts";
+import { cacheReason, registerClaude } from "../extensions/claude.ts";
 import { newHubState } from "../extensions/status.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -29,211 +28,132 @@ function fakeContext(provider: string, api: string) {
   return { ctx, statuses };
 }
 
-function config(claudeCache: boolean): HubConfig {
-  return { baseUrl: "https://gateway.invalid", apiKeyRef: "$FAKE_KEY", claudeCache };
-}
-
-function hasCacheControl(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(hasCacheControl);
-  if (typeof value !== "object" || value === null) return false;
-  if (Object.hasOwn(value, "cache_control")) return true;
-  return Object.values(value).some(hasCacheControl);
-}
-
-function assistant(overrides: Record<string, unknown> = {}) {
+function assistant(cacheRead: number, cacheWrite: number) {
   return {
     role: "assistant",
-    content: [],
     api: "anthropic-messages",
     provider: "litellm",
     model: "claude-test",
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {} },
-    stopReason: "stop",
-    timestamp: 0,
-    ...overrides,
+    usage: { cacheRead, cacheWrite },
   };
 }
 
-test("cache-on leaves a string system payload unchanged for pi-ai caching", () => {
-  const payload = { system: "Follow these instructions", messages: [{ role: "user", content: "Hi" }] };
-  const original = structuredClone(payload);
+function emitUsage(handlers: Map<string, Handler[]>, ctx: any, cacheRead: number, cacheWrite: number) {
+  handlers.get("message_end")?.[0]({ message: assistant(cacheRead, cacheWrite) }, ctx);
+}
 
-  const result = applyClaudeCache(payload, true);
-
-  assert.equal(result, payload);
-  assert.deepEqual(payload, original);
-});
-
-test("cache-on preserves existing system breakpoint blocks by reference", () => {
-  const payload = {
-    system: [
-      { type: "text", text: "First" },
-      { type: "text", text: "Last", cache_control: { type: "ephemeral" } },
-    ],
-    messages: [],
-  };
-  const original = structuredClone(payload);
-
-  const result = applyClaudeCache(payload, true);
-
-  assert.equal(result, payload);
-  assert.deepEqual(payload, original);
-});
-
-test("cache-off recursively strips controls from system, messages, and tools without mutation", () => {
-  const payload = {
-    system: [{ type: "text", text: "Rules", cache_control: { type: "ephemeral" } }],
-    messages: [
-      {
-        role: "user",
-        content: [{
-          type: "text",
-          text: "Hi",
-          cache_control: { type: "ephemeral" },
-          metadata: { cache_control: { type: "ephemeral" } },
-        }],
-      },
-    ],
-    tools: [{ name: "last-tool", cache_control: { type: "ephemeral" } }],
-  };
-  const original = structuredClone(payload);
-
-  const result = applyClaudeCache(payload, false);
-
-  assert.notEqual(result, payload);
-  assert.equal(hasCacheControl(result), false);
-  assert.equal(hasCacheControl(payload), true);
-  assert.deepEqual(payload, original);
-});
-
-test("formats cached token counts for hit and miss reasons", () => {
+test("formats cache hit and miss token counts", () => {
   assert.equal(cacheReason({ cacheWrite: 13500 }), "cache: miss (wrote 13.5k, read 0)");
   assert.equal(cacheReason({ cacheRead: 9902 }), "cache: hit (read 9.9k)");
+  assert.equal(cacheReason({ cacheRead: 10278 }), "cache: hit (read 10.3k)");
   assert.equal(cacheReason({ cacheRead: 0, cacheWrite: 0 }), undefined);
 });
 
-test("Claude request hooks are gated to LiteLLM Anthropic Messages", () => {
+test("ignores messages unless the active model is LiteLLM Anthropic Messages", () => {
   const { pi, handlers } = fakeRuntime();
   const state = newHubState();
-  registerClaude(pi, state, config(true));
+  registerClaude(pi, state);
   const { ctx } = fakeContext("openai", "anthropic-messages");
-  const payload = { system: "Leave this payload unchanged", messages: [] };
-  const result = handlers.get("before_provider_request")?.[0]({ payload }, ctx);
 
-  handlers.get("message_end")?.[0](
-    {
-      message: assistant({ provider: "litellm", stopReason: "error", errorMessage: "cache_control rejected" }),
-    },
-    ctx,
-  );
+  emitUsage(handlers, ctx, 10278, 0);
 
-  assert.equal(result, undefined);
-  assert.equal(payload.system, "Leave this payload unchanged");
-  assert.equal(state.claudeCacheDisabled, undefined);
+  assert.equal(state.lastCache, undefined);
   assert.equal(state.reason, undefined);
 });
 
-test("records cache usage for a LiteLLM Claude assistant response when enabled", () => {
+test("a first cache miss is informational and does not set a reason", () => {
   const { pi, handlers } = fakeRuntime();
   const state = newHubState();
-  registerClaude(pi, state, config(true));
+  registerClaude(pi, state);
   const { ctx } = fakeContext("litellm", "anthropic-messages");
 
-  handlers.get("message_end")?.[0](
-    { message: assistant({ usage: { cacheRead: 9902, cacheWrite: 0 } }) },
-    ctx,
-  );
+  emitUsage(handlers, ctx, 0, 13500);
 
-  assert.equal(state.reason, "cache: hit (read 9.9k)");
+  assert.equal(state.lastCache, "cache: miss (wrote 13.5k, read 0)");
+  assert.equal(state.reason, undefined);
 });
 
-test("a cache_control rejection disables cache for subsequent requests in the session", () => {
+test("two consecutive Claude cache misses set the gateway warning", () => {
   const { pi, handlers } = fakeRuntime();
   const state = newHubState();
-  registerClaude(pi, state, config(true));
+  registerClaude(pi, state);
   const { ctx } = fakeContext("litellm", "anthropic-messages");
-  const beforeRequest = handlers.get("before_provider_request")?.[0];
-  const rejectedPayload = {
-    system: [{ type: "text", text: "Rules", cache_control: { type: "ephemeral" } }],
-    messages: [],
-    tools: [{ name: "last-tool", cache_control: { type: "ephemeral" } }],
-  };
-  const first = beforeRequest?.({ payload: rejectedPayload }, ctx);
 
-  assert.equal(first, rejectedPayload);
-  assert.equal(hasCacheControl(first), true);
-  handlers.get("message_end")?.[0](
-    {
-      message: assistant({
-        stopReason: "error",
-        errorMessage: "gateway rejected cache_control in this request",
-      }),
-    },
-    ctx,
-  );
+  emitUsage(handlers, ctx, 0, 13500);
+  emitUsage(handlers, ctx, 0, 12000);
 
-  const nextPayload = {
-    system: [{ type: "text", text: "Rules", cache_control: { type: "ephemeral" } }],
-    messages: [{ role: "user", content: [{ type: "text", text: "Hi", cache_control: { type: "ephemeral" } }] }],
-  };
-  const next = beforeRequest?.({ payload: nextPayload }, ctx);
-
-  assert.equal(state.claudeCacheDisabled, true);
-  assert.equal(state.reason, "cache: rejected by gateway, caching off for this session");
-  assert.equal(hasCacheControl(next), false);
-  assert.equal(hasCacheControl(nextPayload), true);
+  assert.equal(state.reason, "cache: missed 2 turns in row (gateway caching may be off)");
+  assert.equal(state.lastCache, "cache: miss (wrote 12k, read 0)");
 });
 
-test("configured-off Claude caching does not record cache rejections", () => {
+test("a cache hit resets the miss streak", () => {
   const { pi, handlers } = fakeRuntime();
   const state = newHubState();
-  state.reason = "existing reason";
-  registerClaude(pi, state, config(false));
+  registerClaude(pi, state);
   const { ctx } = fakeContext("litellm", "anthropic-messages");
 
-  handlers.get("message_end")?.[0](
-    {
-      message: assistant({
-        stopReason: "error",
-        errorMessage: "gateway rejected cache_control in this request",
-      }),
-    },
-    ctx,
-  );
+  emitUsage(handlers, ctx, 0, 13500);
+  emitUsage(handlers, ctx, 10278, 0);
+  emitUsage(handlers, ctx, 0, 12000);
 
-  assert.equal(state.claudeCacheDisabled, undefined);
-  assert.equal(state.reason, "existing reason");
+  assert.equal(state.reason, undefined);
+  assert.equal(state.lastCache, "cache: miss (wrote 12k, read 0)");
 });
 
-test("already-disabled Claude caching does not replace its existing reason", () => {
+test("a cache hit clears this observer's existing miss warning", () => {
   const { pi, handlers } = fakeRuntime();
   const state = newHubState();
-  state.claudeCacheDisabled = true;
-  state.reason = "previous cache failure";
-  registerClaude(pi, state, config(true));
+  registerClaude(pi, state);
   const { ctx } = fakeContext("litellm", "anthropic-messages");
 
-  handlers.get("message_end")?.[0](
-    {
-      message: assistant({
-        stopReason: "error",
-        errorMessage: "gateway rejected cache_control again",
-      }),
-    },
-    ctx,
-  );
+  emitUsage(handlers, ctx, 0, 13500);
+  emitUsage(handlers, ctx, 0, 12000);
+  assert.equal(state.reason, "cache: missed 2 turns in row (gateway caching may be off)");
 
-  assert.equal(state.claudeCacheDisabled, true);
-  assert.equal(state.reason, "previous cache failure");
+  emitUsage(handlers, ctx, 10278, 0);
+
+  assert.equal(state.reason, undefined);
+  assert.equal(state.lastCache, "cache: hit (read 10.3k)");
 });
 
-test("configured-off Claude caching strips pre-existing cache controls", () => {
+test("a no-cache-data Claude turn breaks the streak but preserves the warning", () => {
   const { pi, handlers } = fakeRuntime();
-  registerClaude(pi, newHubState(), config(false));
+  const state = newHubState();
+  registerClaude(pi, state);
   const { ctx } = fakeContext("litellm", "anthropic-messages");
-  const payload = { system: "Rules", messages: [{ content: [{ cache_control: { type: "ephemeral" } }] }] };
-  const result = handlers.get("before_provider_request")?.[0]({ payload }, ctx);
 
-  assert.equal(hasCacheControl(result), false);
-  assert.equal(hasCacheControl(payload), true);
+  emitUsage(handlers, ctx, 0, 13500);
+  emitUsage(handlers, ctx, 0, 12000);
+  emitUsage(handlers, ctx, 0, 0);
+
+  assert.equal(state.reason, "cache: missed 2 turns in row (gateway caching may be off)");
+  assert.equal(state.lastCache, undefined);
+});
+
+test("a cache hit does not clear an unrelated reason", () => {
+  const { pi, handlers } = fakeRuntime();
+  const state = newHubState();
+  state.reason = "gateway unavailable";
+  registerClaude(pi, state);
+  const { ctx } = fakeContext("litellm", "anthropic-messages");
+
+  emitUsage(handlers, ctx, 10278, 0);
+
+  assert.equal(state.reason, "gateway unavailable");
+});
+
+test("an intervening assistant from another provider breaks the miss streak", () => {
+  const { pi, handlers } = fakeRuntime();
+  const state = newHubState();
+  registerClaude(pi, state);
+  const { ctx } = fakeContext("litellm", "anthropic-messages");
+
+  emitUsage(handlers, ctx, 0, 13500);
+  handlers.get("message_end")?.[0](
+    { message: { role: "assistant", provider: "openai", api: "openai-responses", usage: {} } },
+    fakeContext("openai", "openai-responses").ctx,
+  );
+  emitUsage(handlers, ctx, 0, 12000);
+
+  assert.equal(state.reason, undefined);
 });

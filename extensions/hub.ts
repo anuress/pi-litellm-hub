@@ -163,7 +163,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
 
   config = loaded.config;
   state.config = config;
-  registerClaude(pi, state, config);
+  registerClaude(pi, state);
   try {
     apiKey = resolveKey(config.apiKeyRef, env);
   } catch {
