@@ -160,19 +160,27 @@ function unknownChatModel(id: string): MatchedModel {
   };
 }
 
+// Model-intrinsic compat flags; other catalog compat describes OpenAI-direct transport features the gateway does not forward.
+const INTRINSIC_COMPAT = ["forceAdaptiveThinking", "supportsTemperature", "supportsStrictTools"];
+
 function modelConfig(
   catalogModel: Record<string, any>,
   id: string,
   api: Protocol,
   levels: Record<string, string | null> | undefined,
 ): Record<string, unknown> {
-  // Allowlist only: catalog compat/promptCache describe OpenAI-direct transport features the gateway does not forward.
+  // Allowlist only: promptCache and transport fields are never inherited.
   const copied = Object.fromEntries(
     ["name", "reasoning", "input", "cost", "contextWindow", "maxTokens"]
       .filter((key) => key in catalogModel)
       .map((key) => [key, catalogModel[key]]),
   );
   const result: Record<string, unknown> = { ...copied, id, api };
+  const compat = Object.fromEntries(
+    INTRINSIC_COMPAT.filter((key) => isRecord(catalogModel.compat) && key in catalogModel.compat)
+      .map((key) => [key, catalogModel.compat[key]]),
+  );
+  if (Object.keys(compat).length) result.compat = compat;
   // Never preserve a catalog map when thinkingFor did not approve levels.
   if (levels !== undefined) result.thinkingLevelMap = levels;
   return result;

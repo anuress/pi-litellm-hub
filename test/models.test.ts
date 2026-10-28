@@ -291,8 +291,8 @@ test("rejects a successful response without the documented data list", async () 
   );
 });
 
-test("never inherits catalog transport fields such as compat and promptCache", () => {
-  const compat = {
+test("keeps only model-intrinsic catalog compat and drops transport fields", () => {
+  const lunaCompat = {
     supportsStrictMode: true,
     supportsOpenAIGrammarTools: true,
     supportsAdditionalTools: true,
@@ -301,16 +301,33 @@ test("never inherits catalog transport fields such as compat and promptCache", (
     supportsExplicitPromptCacheMode: true,
     supportsMidConvoEffort: true,
   };
+  const entry = (id: string, compat: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    provider: "p",
+    model: catalogModel({ id, compat, promptCache: { mode: "explicit" }, headers: { a: "b" }, ...extra }),
+  });
   const result = matchModels(
-    ["gpt-6-luna"],
+    ["sonnet", "opus", "luna", "kimi"],
     fakeCatalog([
-      { provider: "openai", model: catalogModel({ compat, promptCache: { mode: "explicit" }, headers: { a: "b" } }) },
+      entry("sonnet", { forceAdaptiveThinking: true, supportsStrictTools: true }),
+      entry("opus", {
+        supportsMidConvoEffort: true,
+        supportsMidConvoToolChanges: true,
+        forceAdaptiveThinking: true,
+        supportsTemperature: false,
+        supportsStrictTools: true,
+      }),
+      entry("luna", lunaCompat),
+      entry("kimi", { supportsDeveloperRole: false, thinkingFormat: "openrouter", sendSessionAffinityHeaders: true }),
     ]),
   );
-  const model = result.models[0].model;
+  const [sonnet, opus, luna, kimi] = result.models.map((model) => model.model);
 
-  assert.deepEqual(Object.keys(model).sort(), [
-    "api", "contextWindow", "cost", "id", "input", "maxTokens", "name", "reasoning", "thinkingLevelMap",
-  ]);
-  assert.deepEqual(model.thinkingLevelMap, efforts);
+  assert.deepEqual(sonnet.compat, { forceAdaptiveThinking: true, supportsStrictTools: true });
+  assert.deepEqual(opus.compat, { forceAdaptiveThinking: true, supportsTemperature: false, supportsStrictTools: true });
+  assert.equal("compat" in luna, false);
+  assert.equal("compat" in kimi, false);
+  for (const model of [sonnet, opus, luna, kimi]) {
+    assert.deepEqual(Object.keys(model).filter((key) => ["promptCache", "headers"].includes(key)), []);
+    assert.deepEqual(model.thinkingLevelMap, efforts);
+  }
 });
