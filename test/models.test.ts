@@ -45,7 +45,14 @@ function catalogModel(overrides: Record<string, any> = {}): Record<string, any> 
 test("matches an exact catalog id and preserves its effort map and provider source", () => {
   const result = matchModels(
     ["gpt-6-luna"],
-    fakeCatalog([{ provider: "openai", model: catalogModel() }]),
+    fakeCatalog([
+      { provider: "openai", model: catalogModel() },
+      {
+        provider: "azure-openai-responses",
+        model: catalogModel({ api: "azure-openai-responses", thinkingLevelMap: { high: "azure" } }),
+      },
+      { provider: "opencode", model: catalogModel({ thinkingLevelMap: { high: "opencode" } }) },
+    ]),
   );
 
   assert.equal(result.models.length, 1);
@@ -74,6 +81,11 @@ test("matches a vendor-prefixed id to its vendor provider", () => {
   const result = matchModels(
     ["moonshotai/kimi-k3"],
     fakeCatalog([
+      {
+        provider: "openrouter",
+        model: catalogModel({ id: "kimi-k3", thinkingLevelMap: { high: "aggregator" } }),
+      },
+      { provider: "nvidia", model: catalogModel({ id: "kimi-k3", thinkingLevelMap: { high: "nvidia" } }) },
       {
         provider: "moonshotai",
         model: catalogModel({
@@ -107,31 +119,31 @@ test("explains Kimi thinking without a model-specific carrier", () => {
   assert.equal("thinkingLevelMap" in result.models[0].model, false);
 });
 
-test("reports ambiguous matches only when their effort maps differ", () => {
+test("reports ambiguity when same-priority entries have different effort maps", () => {
   const result = matchModels(
     ["glm-5.3"],
     fakeCatalog([
-      { provider: "zai", model: catalogModel({ id: "glm-5.3", thinkingLevelMap: { high: "high" } }) },
-      { provider: "openrouter", model: catalogModel({ id: "glm-5.3", thinkingLevelMap: { high: "on" } }) },
+      { provider: "openai", model: catalogModel({ id: "glm-5.3", thinkingLevelMap: { high: "high" } }) },
+      { provider: "openai", model: catalogModel({ id: "glm-5.3", thinkingLevelMap: { high: "on" } }) },
     ]),
   );
 
-  assert.equal(result.models[0].catalogSource, "zai");
+  assert.equal(result.models[0].catalogSource, "openai");
   assert.equal(result.models[0].reason, "ambiguous catalog match");
   assert.equal(result.models[0].levels, undefined);
   assert.equal("thinkingLevelMap" in result.models[0].model, false);
 });
 
-test("matches identical effort maps independent of property order", () => {
+test("matches identical same-priority effort maps independent of property order", () => {
   const result = matchModels(
     ["glm-5.3"],
     fakeCatalog([
-      { provider: "zai", model: catalogModel({ id: "glm-5.3", thinkingLevelMap: { low: "low", high: "high" } }) },
-      { provider: "openrouter", model: catalogModel({ id: "glm-5.3", thinkingLevelMap: { high: "high", low: "low" } }) },
+      { provider: "openai", model: catalogModel({ id: "glm-5.3", thinkingLevelMap: { low: "low", high: "high" } }) },
+      { provider: "openai", model: catalogModel({ id: "glm-5.3", thinkingLevelMap: { high: "high", low: "low" } }) },
     ]),
   );
 
-  assert.equal(result.models[0].catalogSource, "zai");
+  assert.equal(result.models[0].catalogSource, "openai");
   assert.equal(result.models[0].reason, undefined);
   assert.deepEqual(result.models[0].levels, { low: "low", high: "high" });
 });
@@ -210,16 +222,13 @@ test("normalizes Azure Responses and falls back for unsupported catalog APIs", (
   assert.equal(result.models[1].api, "openai-completions");
 });
 
-test("rejects gateway redirects", async () => {
-  const fetchImpl: typeof fetch = async () => new Response("", { status: 302 });
-  await assert.rejects(
-    fetchGatewayIds(
-      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY", claudeCache: false },
-      fakeApiKey,
-      fetchImpl,
-    ),
-    /redirect refused \(3xx\)/,
-  );
+test("rejects HTTP and opaque gateway redirects", async () => {
+  const cfg = { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY", claudeCache: false };
+  const responses = [new Response("", { status: 302 }), { status: 0, type: "opaqueredirect" } as Response];
+  for (const response of responses) {
+    const fetchImpl: typeof fetch = async () => response;
+    await assert.rejects(fetchGatewayIds(cfg, fakeApiKey, fetchImpl), /redirect refused \(3xx\)/);
+  }
 });
 
 test("redacts the API key from a gateway error body", async () => {
@@ -279,18 +288,5 @@ test("rejects a successful response without the documented data list", async () 
       fetchImpl,
     ),
     /invalid model list/,
-  );
-});
-
-test("rejects opaque redirects from the gateway", async () => {
-  const fetchImpl: typeof fetch = async () =>
-    ({ status: 0, type: "opaqueredirect" }) as Response;
-  await assert.rejects(
-    fetchGatewayIds(
-      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY", claudeCache: false },
-      fakeApiKey,
-      fetchImpl,
-    ),
-    /redirect refused \(3xx\)/,
   );
 });

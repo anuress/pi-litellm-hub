@@ -29,10 +29,11 @@ test("uses catalog effort levels when they are available", () => {
   assert.deepEqual(thinkingFor(model(), "reasoning-model"), { levels: efforts });
 });
 
-test("reports when the catalog has no effort levels", () => {
-  assert.deepEqual(thinkingFor(model({ thinkingLevelMap: undefined }), "plain-reasoner"), {
-    reason: "catalog lists no effort levels",
-  });
+test("uses pi's default effort levels when the catalog has no map", () => {
+  assert.deepEqual(thinkingFor(model({ thinkingLevelMap: undefined }), "plain-reasoner"), {});
+});
+
+test("reports no effort levels only when a present map is all null", () => {
   assert.deepEqual(
     thinkingFor(model({ thinkingLevelMap: { low: null, high: null } }), "plain-reasoner"),
     { reason: "catalog lists no effort levels" },

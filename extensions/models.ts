@@ -23,6 +23,29 @@ export type Catalog = {
 
 type CatalogEntry = { provider: string; model: Record<string, any> };
 
+// First-party metadata is most accurate for a vendor's own model; aggregators and fallback providers follow.
+export const PROVIDER_PRIORITY = [
+  "openai",
+  "anthropic",
+  "google",
+  "xai",
+  "moonshotai",
+  "zai",
+  "deepseek",
+  "mistral",
+  "meta",
+  "openrouter",
+  "opencode",
+] as const;
+
+const VENDOR_PROVIDER_HINTS: Record<string, string> = {
+  moonshotai: "moonshot",
+  "z-ai": "zai",
+  "x-ai": "xai",
+  deepseek: "deepseek",
+  google: "google",
+  gemini: "google",
+};
 const USER_AGENT = `pi-litellm-hub/${packageInfo.version}`;
 const NON_CHAT_ID = /embedding|rerank|voyage|chirp|image|tts|whisper/i;
 const NON_CHAT_REASON = "not a chat model";
@@ -33,84 +56,89 @@ function isRecord(value: unknown): value is Record<string, any> {
 }
 
 function deepEqual(left: unknown, right: unknown): boolean {
-  // Reuse identical primitive and reference values without descending.
   if (Object.is(left, right)) return true;
-  // Distinct primitive values cannot represent equal nested catalog data.
-  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) {
-    return false;
-  }
-  // Arrays are ordered, unlike the object keys used by effort maps.
+  // Thinking maps are JSON-shaped; recurse through ordered arrays and key-order-independent records.
   if (Array.isArray(left) || Array.isArray(right)) {
-    return (
-      Array.isArray(left) &&
-      Array.isArray(right) &&
-      left.length === right.length &&
-      left.every((value, index) => deepEqual(value, right[index]))
-    );
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length &&
+      left.every((value, index) => deepEqual(value, right[index]));
   }
-
-  // Compare own keys and values so insertion order does not create false ambiguity.
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord);
-  const rightKeys = Object.keys(rightRecord);
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every(
-      (key) => Object.hasOwn(rightRecord, key) && deepEqual(leftRecord[key], rightRecord[key]),
-    )
-  );
+  if (!isRecord(left) || !isRecord(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.hasOwn(right, key) && deepEqual(left[key], right[key]));
 }
 
 function protocolFor(api: unknown): Protocol {
-  // Anthropic Messages remains distinct from the OpenAI-compatible endpoints.
+  // Preserve supported APIs, normalize Azure Responses, and default unknown APIs to completions.
   if (api === "anthropic-messages") return "anthropic-messages";
-  // Azure Responses uses pi's standard OpenAI Responses adapter.
   if (api === "openai-responses" || api === "azure-openai-responses") return "openai-responses";
-  // Unknown APIs deliberately fall back to the supported completions protocol.
   return "openai-completions";
 }
-
 function catalogEntries(catalog: Catalog, providers: string[]): CatalogEntry[] {
-  const entries: CatalogEntry[] = [];
-  for (const provider of providers) {
-    for (const model of catalog.models(provider)) {
-      // Ignore malformed injected entries that cannot match a gateway id.
-      if (isRecord(model) && typeof model.id === "string") entries.push({ provider, model });
-    }
-  }
-  return entries;
+  return providers.flatMap((provider) =>
+    catalog.models(provider)
+      .filter((model) => isRecord(model) && typeof model.id === "string")
+      .map((model) => ({ provider, model })),
+  );
 }
 
+function providerRanks(providers: string[]): Map<string, number> {
+  const ranks = new Map<string, number>();
+  PROVIDER_PRIORITY.forEach((provider, index) => ranks.set(provider, index));
+  // Providers outside the named list use a stable alphabetical fallback rank.
+  [...new Set(providers.map((provider) => provider.toLowerCase()))]
+    .filter((provider) => !ranks.has(provider))
+    .sort()
+    .forEach((provider, index) => ranks.set(provider, PROVIDER_PRIORITY.length + index));
+  return ranks;
+}
 function candidatesForId(
   id: string,
   providers: string[],
   entries: CatalogEntry[],
-): CatalogEntry[] {
-  // A full catalog id always takes priority over vendor-prefix stripping.
-  const exactMatches = entries.filter((entry) => entry.model.id === id);
-  if (exactMatches.length > 0) return exactMatches;
-
+): { candidates: CatalogEntry[]; vendorProviders: Set<string> } {
   const slash = id.indexOf("/");
-  // Only ids with a non-empty vendor and model part have a vendor prefix.
-  if (slash <= 0 || slash === id.length - 1) return [];
-
-  const vendor = id.slice(0, slash).toLowerCase();
-  const strippedId = id.slice(slash + 1);
-  // The provider name may equal the vendor or include it as a longer provider id.
+  const vendor = slash > 0 && slash < id.length - 1 ? id.slice(0, slash).toLowerCase() : undefined;
+  // Treat unknown prefixes as literal hints without consulting inherited object properties.
+  const hint = vendor && Object.hasOwn(VENDOR_PROVIDER_HINTS, vendor) ? VENDOR_PROVIDER_HINTS[vendor] : vendor;
   const vendorProviders = new Set(
-    providers.filter((provider) => {
-      const normalizedProvider = provider.toLowerCase();
-      return normalizedProvider === vendor || normalizedProvider.includes(vendor);
-    }),
+    hint ? providers.filter((provider) => provider.toLowerCase().includes(hint)).map((p) => p.toLowerCase()) : [],
   );
-  // Prefer the vendor's own catalog before trying the stripped id globally.
-  const vendorMatches = entries.filter(
-    (entry) => vendorProviders.has(entry.provider) && entry.model.id === strippedId,
-  );
-  if (vendorMatches.length > 0) return vendorMatches;
+  // A full catalog id wins before trying its vendor-stripped form.
+  const exact = entries.filter((entry) => entry.model.id === id);
+  if (exact.length) return { candidates: exact, vendorProviders };
+  if (!vendor || slash === id.length - 1) return { candidates: [], vendorProviders };
 
-  return entries.filter((entry) => entry.model.id === strippedId);
+  // Prefer a matching vendor provider; if none lists the id, search every provider.
+  const strippedId = id.slice(slash + 1);
+  const vendorMatches = entries.filter(
+    (entry) => vendorProviders.has(entry.provider.toLowerCase()) && entry.model.id === strippedId,
+  );
+  return {
+    candidates: vendorMatches.length ? vendorMatches : entries.filter((entry) => entry.model.id === strippedId),
+    vendorProviders,
+  };
+}
+
+function preferredCandidates(
+  candidates: CatalogEntry[],
+  vendorProviders: Set<string>,
+  ranks: Map<string, number>,
+): CatalogEntry[] {
+  let bestRank: [number, number] | undefined;
+  const preferred: CatalogEntry[] = [];
+  for (const entry of candidates) {
+    // Vendor-aligned providers rank first, then use the fixed or alphabetical provider order.
+    const provider = entry.provider.toLowerCase();
+    const rank: [number, number] = [vendorProviders.has(provider) ? 0 : 1, ranks.get(provider) ?? ranks.size];
+    const comparison = !bestRank ? -1 : rank[0] - bestRank[0] || rank[1] - bestRank[1];
+    if (comparison < 0) {
+      bestRank = rank;
+      preferred.length = 0;
+      preferred.push(entry);
+    } else if (bestRank && comparison === 0) preferred.push(entry);
+  }
+  return preferred;
 }
 
 function unknownChatModel(id: string): MatchedModel {
@@ -163,11 +191,12 @@ export function matchModels(
 ): { models: MatchedModel[]; skipped: Skipped[] } {
   const providers = catalog.providers();
   const entries = catalogEntries(catalog, providers);
+  const ranks = providerRanks(providers);
   const models: MatchedModel[] = [];
   const skipped: Skipped[] = [];
 
   for (const id of ids) {
-    const candidates = candidatesForId(id, providers, entries);
+    const { candidates, vendorProviders } = candidatesForId(id, providers, entries);
     if (candidates.length === 0) {
       // Known media/embedding names are not safe guesses for chat models.
       if (NON_CHAT_ID.test(id)) skipped.push({ id, reason: NON_CHAT_REASON });
@@ -181,12 +210,13 @@ export function matchModels(
       continue;
     }
 
-    const first = candidates[0];
-    // A conflicting effort map is not safe to choose; identical maps retain provider order.
-    const ambiguous = candidates.some(
+    const preferred = preferredCandidates(candidates, vendorProviders, ranks);
+    const first = preferred[0];
+    // Only equal-priority entries can be ambiguous; lower-priority maps are ignored.
+    const ambiguous = preferred.some(
       ({ model }) => !deepEqual(model.thinkingLevelMap, first.model.thinkingLevelMap),
     );
-    const thinking = ambiguous
+    const thinking: ReturnType<typeof thinkingFor> = ambiguous
       ? { reason: "ambiguous catalog match" }
       : thinkingFor(first.model, id);
     const api = protocolFor(first.model.api);

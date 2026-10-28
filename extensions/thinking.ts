@@ -45,11 +45,10 @@ export function thinkingFor(
   }
 
   const levels = catalogModel.thinkingLevelMap;
-  // Empty and all-null maps expose no selectable effort level.
-  if (
-    !isRecord(levels) ||
-    Object.values(levels).every((value) => value === null)
-  ) {
+  // No map leaves pi's provider defaults intact (the standard levels through high).
+  if (levels === undefined) return {};
+  // Only a present map whose every value is null explicitly disables selectable effort levels.
+  if (!isRecord(levels) || Object.values(levels).every((value) => value === null)) {
     return { reason: "catalog lists no effort levels" };
   }
 
