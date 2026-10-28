@@ -1,0 +1,4 @@
+.agent/
+node_modules/
+.privacy-denylist
+.DS_Store
