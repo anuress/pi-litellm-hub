@@ -1,10 +1,12 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerClaude } from "./claude.ts";
 import { loadConfig, type HubConfig } from "./config.ts";
 import { fetchGatewayIds } from "./gateway.ts";
 import { matchModels, type Catalog, type MatchedModel, type Skipped } from "./models.ts";
 import { redact } from "./redact.ts";
 import { newHubState, renderModelReport, updateStatus, type HubState } from "./status.ts";
 import { resolveKeyRef } from "./keyref.ts";
+import { registerTransport } from "./transport.ts";
 
 export type HubDependencies = {
   pi: ExtensionAPI;
@@ -37,6 +39,7 @@ function providerModels(models: MatchedModel[], config: HubConfig): any[] {
 export async function createHub(deps: HubDependencies): Promise<HubState> {
   const { pi, env, home, fetchImpl, catalog, resolveKey } = deps;
   const state = newHubState();
+  registerTransport(pi, state);
   let config: HubConfig | undefined;
   let apiKey: string | undefined;
 
@@ -160,6 +163,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
 
   config = loaded.config;
   state.config = config;
+  registerClaude(pi, state, config);
   try {
     apiKey = resolveKey(config.apiKeyRef, env);
   } catch {

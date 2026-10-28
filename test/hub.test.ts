@@ -45,16 +45,20 @@ function fakeRuntime() {
   const providers: Array<{ name: string; config: any }> = [];
   const commands = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
   const events = new Map<string, (event: any, ctx: any) => Promise<void> | void>();
+  const eventRegistrations = new Map<string, Array<(event: any, ctx: any) => Promise<void> | void>>();
   const pi = {
     registerProvider: (name: string, config: any) => providers.push({ name, config }),
     registerCommand: (name: string, definition: { handler: (args: string, ctx: any) => Promise<void> | void }) =>
       commands.set(name, definition.handler),
     on: (event: string, handler: (event: any, ctx: any) => Promise<void> | void) => {
       events.set(event, handler);
+      const registrations = eventRegistrations.get(event) ?? [];
+      registrations.push(handler);
+      eventRegistrations.set(event, registrations);
       return () => events.delete(event);
     },
   };
-  return { pi, providers, commands, events };
+  return { pi, providers, commands, events, eventRegistrations };
 }
 
 function fakeContext() {
@@ -272,4 +276,18 @@ test("model and thinking selection events keep the status current", async () => 
   await runtime.events.get("thinking_level_select")?.({ level: "off" }, { ...ctx, thinkingLevel: "off" });
   assert.equal(state.thinking, "off");
   assert.match(statuses.at(-1)?.text ?? "", /thinking off/);
+});
+
+test("configured hub wires request transport and Claude cache hooks", async () => {
+  const runtime = fakeRuntime();
+  await createHub(dependencies(runtime.pi, async () => responseFor(["chat-model", "claude-model"])));
+
+  for (const event of [
+    "before_provider_headers",
+    "after_provider_response",
+    "message_end",
+  ]) {
+    assert.equal(runtime.eventRegistrations.get(event)?.length, 1, `${event} handler is registered`);
+  }
+  assert.equal(runtime.eventRegistrations.get("before_provider_request")?.length, 2);
 });

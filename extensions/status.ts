@@ -13,6 +13,7 @@ export type HubState = {
   sessionEstimated: boolean;
   keySpend?: number;
   keyBudget?: number;
+  claudeCacheDisabled?: boolean;
   resetAt?: string;
   window?: string;
   notConfigured?: string;
