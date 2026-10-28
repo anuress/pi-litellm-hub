@@ -27,13 +27,15 @@ The top-level `packages` list loads this pi package; `package.json` declares `"p
 export LITELLM_BASE_URL='https://litellm.example.com'
 ```
 
-Set the API key in the environment:
+Store the API key in pi's credential file, `~/.pi/agent/auth.json`, under provider `litellm` (the extension accepts `key`, `apiKey`, or `access`):
 
-```sh
-export LITELLM_API_KEY='sk-...'
+```json
+{
+  "litellm": { "type": "api_key", "key": "sk-..." }
+}
 ```
 
-Alternatively, use pi's saved credential for provider `litellm` in `~/.pi/agent/auth.json` (the extension accepts `key`, `apiKey`, or `access`). `LITELLM_API_KEY` takes precedence. For model calls, pi resolves a `!node -e` reference at request time; the hub resolves the credential at startup for its own gateway lookups. The raw key is never copied into provider or model definitions.
+Keep that file private (`chmod 600 ~/.pi/agent/auth.json`) and out of any dotfiles repository. The extension also accepts the key from the `LITELLM_API_KEY` environment variable, which takes precedence. For model calls, pi resolves a `!node -e` reference at request time; the hub resolves the credential at startup for its own gateway lookups. The raw key is never copied into provider or model definitions.
 
 Use the gateway root URL. HTTPS is required except for `http://localhost` and `http://127.0.0.1`; URL userinfo (`user:password@`) is rejected. A trailing slash or `/v1` suffix is normalized away.
 
