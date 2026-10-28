@@ -6,6 +6,7 @@ import {
   newHubState,
   renderModelReport,
   renderStatus,
+  supportedLevels,
   updateStatus,
 } from "../extensions/status.ts";
 
@@ -75,13 +76,13 @@ test("renders model count and spend when there is no active LiteLLM model", () =
 test("model report lists default thinking and skipped model reasons", () => {
   const state = Object.assign(newHubState(), {
     models: [
-      { id: "plain-model", api: "openai-responses", catalogSource: "openai", model: {} },
+      { id: "plain-model", api: "openai-responses", catalogSource: "openai", model: { reasoning: true } },
       {
         id: "reasoning-model",
         api: "anthropic-messages",
         catalogSource: "anthropic",
         levels: { off: null, low: "low", high: "high" },
-        model: {},
+        model: { reasoning: true },
       },
     ],
     skipped: [{ id: "text-embedding-model", reason: "not a chat model" }],
@@ -90,8 +91,8 @@ test("model report lists default thinking and skipped model reasons", () => {
   const report = renderModelReport(state);
 
   assert.match(report, /2 matched, 1 skipped/);
-  assert.match(report, /plain-model \| openai-responses \| pi default \| openai/);
-  assert.match(report, /reasoning-model \| anthropic-messages \| low, high \| anthropic/);
+  assert.match(report, /plain-model \| openai-responses \| off, minimal, low, medium, high \(pi default\) \| openai/);
+  assert.match(report, /reasoning-model \| anthropic-messages \| minimal, low, medium, high \| anthropic/);
   assert.match(report, /Last Claude cache: cache: hit \(read 10\.3k\)/);
   assert.match(report, /Skipped:\n- text-embedding-model — not a chat model/);
 });
@@ -114,8 +115,8 @@ test("snapshot uses an exact allowlist and redacts its reason", () => {
   state.models.push({
     id: "model-one",
     api: "openai-responses",
-    levels: { low: "low", off: null },
-    model: {},
+    levels: { max: "max" },
+    model: { reasoning: true },
   });
 
   const snapshot = hubSnapshot(state, { key: fakeKey, host });
@@ -137,7 +138,8 @@ test("snapshot uses an exact allowlist and redacts its reason", () => {
     "thinkingLevel",
     "window",
   ]);
-  assert.deepEqual(snapshot.levelsAvailable, ["low"]);
+  assert.deepEqual(snapshot.levelsAvailable, supportedLevels(state.models[0]));
+  assert.deepEqual(snapshot.levelsAvailable, ["off", "minimal", "low", "medium", "high", "max"]);
   assert.equal(snapshot.configured, true);
   const serialized = JSON.stringify(snapshot);
   assert.equal(serialized.includes(fakeKey), false);
@@ -145,7 +147,23 @@ test("snapshot uses an exact allowlist and redacts its reason", () => {
   assert.match(serialized, /<gateway>/);
 });
 
-test("snapshot leaves levels undefined when the active model has no map", () => {
+function levelModel(levels: Record<string, string | null> | undefined, reasoning = true) {
+  return { id: "m", api: "openai-responses", levels, model: { reasoning } } as any;
+}
+
+test("supportedLevels mirrors pi's resolution", () => {
+  const all = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  assert.deepEqual(supportedLevels(levelModel({ max: "max" })), ["off", "minimal", "low", "medium", "high", "max"]);
+  assert.deepEqual(supportedLevels(levelModel(Object.fromEntries(all.map((l) => [l, l])))), all);
+  assert.deepEqual(
+    supportedLevels(levelModel({ medium: null, xhigh: null, max: "max" })),
+    ["off", "minimal", "low", "high", "max"],
+  );
+  assert.deepEqual(supportedLevels(levelModel(undefined)), ["off", "minimal", "low", "medium", "high"]);
+  assert.deepEqual(supportedLevels(levelModel({ high: "high" }, false)), ["off"]);
+});
+
+test("snapshot leaves levels undefined when there is no active matched model", () => {
   const state = activeState();
 
   assert.equal(hubSnapshot(state, {}).levelsAvailable, undefined);

@@ -37,7 +37,6 @@ export function hubSnapshot(
   binding: Pick<StatusBinding, "key" | "host">,
 ) {
   const activeModel = state.models.find((model) => model.id === state.activeModelId);
-  const levels = activeModel?.levels;
   const reason = state.reason ?? state.notConfigured;
   // Model metadata and error strings are external text, so sanitize every published string field.
   const safeText = (value: string | undefined) =>
@@ -48,11 +47,8 @@ export function hubSnapshot(
     configured: !state.notConfigured,
     model: safeText(state.activeModelId),
     thinkingLevel: safeText(state.thinking),
-    levelsAvailable: levels === undefined
-      ? undefined
-      : Object.keys(levels)
-          .filter((level) => levels[level] !== null)
-          .map((level) => redact(level, binding.key, binding.host)),
+    levelsAvailable: activeModel &&
+      supportedLevels(activeModel).map((level) => redact(level, binding.key, binding.host)),
     reason: safeText(reason),
     sessionCost: state.sessionCost,
     sessionEstimated: state.sessionEstimated,
@@ -132,11 +128,23 @@ export function renderStatus(state: HubState): string {
   return `${count}${reason}${spendSegment(state)}`;
 }
 
+const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+// Mirrors pi-ai getSupportedThinkingLevels (dist/models.js); not imported to keep pi-ai out of runtime.
+export function supportedLevels(model: MatchedModel): string[] {
+  if (!model.model.reasoning) return ["off"];
+  return LEVELS.filter((level) => {
+    const mapped = model.levels?.[level];
+    if (mapped === null) return false;
+    if (level === "xhigh" || level === "max") return mapped !== undefined;
+    return true;
+  });
+}
+
 function levelsLabel(model: MatchedModel): string {
+  const levels = supportedLevels(model).join(", ");
   // No map deliberately leaves pi's own thinking defaults in control.
-  if (model.levels === undefined) return "pi default";
-  const levels = Object.keys(model.levels).filter((level) => model.levels?.[level] !== null);
-  return levels.length ? levels.join(", ") : "none";
+  return model.levels === undefined ? `${levels} (pi default)` : levels;
 }
 
 export function renderModelReport(state: HubState): string {

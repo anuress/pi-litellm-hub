@@ -296,7 +296,7 @@ test("the report command includes catalog details and the latest Claude cache us
   await runtime.commands.get("litellm")?.("", ctx);
 
   assert.match(notifications.at(-1)?.message ?? "", /1 matched, 1 skipped/);
-  assert.match(notifications.at(-1)?.message ?? "", /chat-model \| openai-responses \| pi default \| openai/);
+  assert.match(notifications.at(-1)?.message ?? "", /chat-model \| openai-responses \| off, minimal, low, medium, high \(pi default\) \| openai/);
   assert.match(notifications.at(-1)?.message ?? "", /Last Claude cache: cache: hit \(read 10\.3k\)/);
   assert.match(notifications.at(-1)?.message ?? "", /text-embedding-model — not a chat model/);
 });
