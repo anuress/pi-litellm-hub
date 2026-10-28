@@ -54,49 +54,53 @@ function assistant(overrides: Record<string, unknown> = {}) {
   };
 }
 
-test("cache-on converts a string system prompt into a cached text block without mutation", () => {
+test("cache-on leaves a string system payload unchanged for pi-ai caching", () => {
   const payload = { system: "Follow these instructions", messages: [{ role: "user", content: "Hi" }] };
   const original = structuredClone(payload);
 
-  const result = applyClaudeCache(payload, true) as typeof payload & { system: unknown[] };
+  const result = applyClaudeCache(payload, true);
 
-  assert.deepEqual(result.system, [
-    { type: "text", text: "Follow these instructions", cache_control: { type: "ephemeral" } },
-  ]);
-  assert.notEqual(result, payload);
+  assert.equal(result, payload);
   assert.deepEqual(payload, original);
 });
 
-test("cache-on marks only the last existing system block", () => {
+test("cache-on preserves existing system breakpoint blocks by reference", () => {
   const payload = {
-    system: [{ type: "text", text: "First" }, { type: "text", text: "Last" }],
+    system: [
+      { type: "text", text: "First" },
+      { type: "text", text: "Last", cache_control: { type: "ephemeral" } },
+    ],
     messages: [],
   };
-  const result = applyClaudeCache(payload, true) as typeof payload;
+  const original = structuredClone(payload);
 
-  assert.equal("cache_control" in result.system[0], false);
-  assert.deepEqual(result.system[1], {
-    type: "text",
-    text: "Last",
-    cache_control: { type: "ephemeral" },
-  });
-  assert.equal("cache_control" in payload.system[1], false);
+  const result = applyClaudeCache(payload, true);
+
+  assert.equal(result, payload);
+  assert.deepEqual(payload, original);
 });
 
-test("cache-off recursively strips controls from system and messages without mutation", () => {
+test("cache-off recursively strips controls from system, messages, and tools without mutation", () => {
   const payload = {
     system: [{ type: "text", text: "Rules", cache_control: { type: "ephemeral" } }],
     messages: [
       {
         role: "user",
-        content: [{ type: "text", text: "Hi", metadata: { cache_control: { type: "ephemeral" } } }],
+        content: [{
+          type: "text",
+          text: "Hi",
+          cache_control: { type: "ephemeral" },
+          metadata: { cache_control: { type: "ephemeral" } },
+        }],
       },
     ],
+    tools: [{ name: "last-tool", cache_control: { type: "ephemeral" } }],
   };
   const original = structuredClone(payload);
 
   const result = applyClaudeCache(payload, false);
 
+  assert.notEqual(result, payload);
   assert.equal(hasCacheControl(result), false);
   assert.equal(hasCacheControl(payload), true);
   assert.deepEqual(payload, original);
@@ -149,10 +153,15 @@ test("a cache_control rejection disables cache for subsequent requests in the se
   registerClaude(pi, state, config(true));
   const { ctx } = fakeContext("litellm", "anthropic-messages");
   const beforeRequest = handlers.get("before_provider_request")?.[0];
-  const rejectedPayload = { system: "Rules", messages: [] };
-  const first = beforeRequest?.({ payload: rejectedPayload }, ctx) as { system: unknown[] };
+  const rejectedPayload = {
+    system: [{ type: "text", text: "Rules", cache_control: { type: "ephemeral" } }],
+    messages: [],
+    tools: [{ name: "last-tool", cache_control: { type: "ephemeral" } }],
+  };
+  const first = beforeRequest?.({ payload: rejectedPayload }, ctx);
 
-  assert.equal(hasCacheControl(first.system), true);
+  assert.equal(first, rejectedPayload);
+  assert.equal(hasCacheControl(first), true);
   handlers.get("message_end")?.[0](
     {
       message: assistant({
@@ -173,6 +182,49 @@ test("a cache_control rejection disables cache for subsequent requests in the se
   assert.equal(state.reason, "cache: rejected by gateway, caching off for this session");
   assert.equal(hasCacheControl(next), false);
   assert.equal(hasCacheControl(nextPayload), true);
+});
+
+test("configured-off Claude caching does not record cache rejections", () => {
+  const { pi, handlers } = fakeRuntime();
+  const state = newHubState();
+  state.reason = "existing reason";
+  registerClaude(pi, state, config(false));
+  const { ctx } = fakeContext("litellm", "anthropic-messages");
+
+  handlers.get("message_end")?.[0](
+    {
+      message: assistant({
+        stopReason: "error",
+        errorMessage: "gateway rejected cache_control in this request",
+      }),
+    },
+    ctx,
+  );
+
+  assert.equal(state.claudeCacheDisabled, undefined);
+  assert.equal(state.reason, "existing reason");
+});
+
+test("already-disabled Claude caching does not replace its existing reason", () => {
+  const { pi, handlers } = fakeRuntime();
+  const state = newHubState();
+  state.claudeCacheDisabled = true;
+  state.reason = "previous cache failure";
+  registerClaude(pi, state, config(true));
+  const { ctx } = fakeContext("litellm", "anthropic-messages");
+
+  handlers.get("message_end")?.[0](
+    {
+      message: assistant({
+        stopReason: "error",
+        errorMessage: "gateway rejected cache_control again",
+      }),
+    },
+    ctx,
+  );
+
+  assert.equal(state.claudeCacheDisabled, true);
+  assert.equal(state.reason, "previous cache failure");
 });
 
 test("configured-off Claude caching strips pre-existing cache controls", () => {

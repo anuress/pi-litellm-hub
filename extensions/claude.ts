@@ -9,7 +9,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function stripCacheControl(value: unknown): unknown {
-  // Traverse arrays and objects to remove controls even from nested message content.
+  // Traverse the complete request, including tools and nested message content.
   if (Array.isArray(value)) return value.map(stripCacheControl);
   if (!isRecord(value)) return value;
   return Object.fromEntries(
@@ -20,33 +20,10 @@ function stripCacheControl(value: unknown): unknown {
 }
 
 export function applyClaudeCache(payload: unknown, on: boolean): unknown {
-  if (!isRecord(payload)) return payload;
-
-  if (!on) {
-    // A disabled cache must also remove controls already present in incoming payloads.
-    const copy = { ...payload };
-    if (Object.hasOwn(payload, "system")) copy.system = stripCacheControl(payload.system);
-    if (Object.hasOwn(payload, "messages")) copy.messages = stripCacheControl(payload.messages);
-    return copy;
-  }
-
-  // Anthropic accepts string prompts, but caching metadata requires a system content block.
-  if (typeof payload.system === "string") {
-    return {
-      ...payload,
-      system: [{ type: "text", text: payload.system, cache_control: { type: "ephemeral" } }],
-    };
-  }
-  // Do not invent a system prompt when this otherwise-valid payload has no system blocks.
-  if (!Array.isArray(payload.system)) return { ...payload };
-
-  const system = payload.system.slice();
-  // The API's prompt caching boundary is the final system block, not message content.
-  const lastIndex = system.length - 1;
-  if (lastIndex >= 0 && isRecord(system[lastIndex])) {
-    system[lastIndex] = { ...system[lastIndex], cache_control: { type: "ephemeral" } };
-  }
-  return { ...payload, system };
+  // pi-ai adds up to four system, conversation, and tool breakpoints; another may exceed Anthropic's limit.
+  if (on) return payload;
+  // Recursively clear all markers so disabled caching cannot write cache via any payload field.
+  return stripCacheControl(payload);
 }
 
 function formatTokens(tokens: number): string {
@@ -86,8 +63,14 @@ export function registerClaude(pi: ExtensionAPI, state: HubState, cfg: HubConfig
       message.api !== "anthropic-messages"
     ) return;
 
-    if (message.stopReason === "error" && message.errorMessage?.toLowerCase().includes("cache_control")) {
-      // Pi exposes the parsed error message here, not the HTTP response body or a retry hook.
+    // Ignore cache rejections when caching was off already or has been disabled before.
+    const cachingEnabled = cfg.claudeCache && !state.claudeCacheDisabled;
+    if (
+      cachingEnabled &&
+      message.stopReason === "error" &&
+      message.errorMessage?.toLowerCase().includes("cache_control")
+    ) {
+      // Store a fixed reason instead of exposing the provider's error text.
       state.claudeCacheDisabled = true;
       state.reason = "cache: rejected by gateway, caching off for this session";
       updateStatus(ctx, state);
@@ -95,7 +78,7 @@ export function registerClaude(pi: ExtensionAPI, state: HubState, cfg: HubConfig
     }
 
     // Report cache token usage only when this session was configured to send cache controls.
-    if (!cfg.claudeCache || state.claudeCacheDisabled) return;
+    if (!cachingEnabled) return;
     const reason = cacheReason(message.usage);
     if (reason) {
       state.reason = reason;
