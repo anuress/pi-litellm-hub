@@ -35,6 +35,12 @@ function responseFor(ids: string[], status = 200, body?: string): Response {
   return new Response(body ?? JSON.stringify({ data: ids.map((id) => ({ id })) }), { status });
 }
 
+function composeModelBaseUrl(providerConfig: any, modelId: string): string {
+  const definition = providerConfig.models.find((model: any) => model.id === modelId);
+  assert.ok(definition);
+  return definition.baseUrl ?? providerConfig.baseUrl;
+}
+
 function fakeRuntime() {
   const providers: Array<{ name: string; config: any }> = [];
   const commands = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
@@ -120,6 +126,8 @@ test("configured startup registers reference auth and only same-gateway model UR
   const anthropicModel = registration.config.models.find((model: any) => model.id === "claude-model");
   assert.equal("baseUrl" in openAiModel, false);
   assert.equal(anthropicModel.baseUrl, baseUrl);
+  assert.equal(composeModelBaseUrl(registration.config, "claude-model"), baseUrl);
+  assert.equal(composeModelBaseUrl(registration.config, "chat-model"), `${baseUrl}/v1`);
   assert.equal(registration.config.models.some((model: any) => model.baseUrl === "https://foreign.example/v1"), false);
 });
 
@@ -131,16 +139,19 @@ test("offline provider refresh reuses loaded models without fetching or changing
     return responseFor(["chat-model", "claude-model"]);
   };
   const state = await createHub(dependencies(runtime.pi, fetchImpl));
-  const refreshModels = runtime.providers[0].config.refreshModels;
-  const currentModels = state.models.map(({ model }) => model);
+  const registration = runtime.providers[0].config;
+  const refreshModels = registration.refreshModels;
   state.reason = "keep this reason";
   const callsBeforeRefresh = fetchCalls;
 
   const refreshed = await refreshModels({ allowNetwork: false, signal: new AbortController().signal });
+  const offlineRegistration = { ...registration, models: refreshed };
 
   assert.equal(fetchCalls - callsBeforeRefresh, 0);
-  assert.deepEqual(refreshed, currentModels);
-  refreshed.forEach((model, index) => assert.strictEqual(model, currentModels[index]));
+  assert.deepEqual(refreshed, registration.models);
+  assert.equal(refreshed.find((model: any) => model.id === "claude-model")?.baseUrl, baseUrl);
+  assert.equal(composeModelBaseUrl(offlineRegistration, "claude-model"), baseUrl);
+  assert.equal(composeModelBaseUrl(offlineRegistration, "chat-model"), `${baseUrl}/v1`);
   assert.equal(state.reason, "keep this reason");
 });
 
