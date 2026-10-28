@@ -43,6 +43,24 @@ function configFor(home: string, env: Record<string, string | undefined> = {}) {
 const remoteHttpUrl = "https://litellm.example.com".replace("https:", "http:");
 const fakeStoredKey = ["sk", "abcdefgh12"].join("-");
 
+function createStoredApiKeyCommand(home: string): string {
+  writeAuth(home, { litellm: { key: fakeStoredKey } });
+  const result = loadConfig({ LITELLM_BASE_URL: "https://litellm.example.com" }, home);
+  if (!result.ok) throw new Error("Expected config to use the stored test credential");
+
+  const command = result.config.apiKeyRef;
+  assert.ok(command.startsWith("!"));
+  assert.equal(command.includes(fakeStoredKey), false);
+  return command.slice(1);
+}
+
+function runStoredApiKeyCommand(command: string, home: string) {
+  return spawnSync("sh", ["-c", command], {
+    encoding: "utf8",
+    env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+  });
+}
+
 test("environment URL takes precedence over settings", () => {
   withHome((home) => {
     writeSettings(home, { litellmHub: { baseUrl: "https://litellm.example.com/settings" } });
@@ -76,6 +94,28 @@ test("reports an invalid gateway URL", () => {
   });
 });
 
+test("rejects a URL with a username", () => {
+  withHome((home) => {
+    const result = configFor(home, { LITELLM_BASE_URL: "https://u@litellm.example.com" });
+    assert.deepEqual(result, {
+      ok: false,
+      reason: "gateway URL must not contain credentials",
+    });
+  });
+});
+
+test("rejects a URL with a username and password", () => {
+  withHome((home) => {
+    const result = configFor(home, {
+      LITELLM_BASE_URL: "https://u:p@litellm.example.com/v1",
+    });
+    assert.deepEqual(result, {
+      ok: false,
+      reason: "gateway URL must not contain credentials",
+    });
+  });
+});
+
 test("rejects non-local HTTP gateway URLs", () => {
   withHome((home) => {
     const result = configFor(home, { LITELLM_BASE_URL: remoteHttpUrl });
@@ -100,21 +140,35 @@ test("uses an environment variable reference when the key is configured", () => 
 
 test("uses a command reference for a stored key without embedding the key", () => {
   withHome((home) => {
-    writeAuth(home, { litellm: { key: fakeStoredKey } });
-    const result = loadConfig({ LITELLM_BASE_URL: "https://litellm.example.com" }, home);
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-
-    const command = result.config.apiKeyRef;
-    assert.ok(command.startsWith("!"));
-    assert.equal(command.includes(fakeStoredKey), false);
-
-    const execution = spawnSync("sh", ["-c", command.slice(1)], {
-      encoding: "utf8",
-      env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin" },
-    });
+    const command = createStoredApiKeyCommand(home);
+    const execution = runStoredApiKeyCommand(command, home);
     assert.equal(execution.status, 0, execution.stderr);
     assert.equal(execution.stdout, fakeStoredKey);
+    assert.equal(execution.stderr, "");
+  });
+});
+
+test("fails quietly when the auth file becomes malformed", () => {
+  withHome((home) => {
+    const command = createStoredApiKeyCommand(home);
+    writeFileSync(join(home, ".pi", "agent", "auth.json"), "{");
+
+    const execution = runStoredApiKeyCommand(command, home);
+    assert.equal(execution.status, 1);
+    assert.equal(execution.stdout, "");
+    assert.equal(execution.stderr, "");
+  });
+});
+
+test("fails quietly when the auth file no longer has a key", () => {
+  withHome((home) => {
+    const command = createStoredApiKeyCommand(home);
+    writeAuth(home, { litellm: {} });
+
+    const execution = runStoredApiKeyCommand(command, home);
+    assert.equal(execution.status, 1);
+    assert.equal(execution.stdout, "");
+    assert.equal(execution.stderr, "");
   });
 });
 

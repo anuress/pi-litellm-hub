@@ -48,6 +48,11 @@ function normalizeBaseUrl(value: unknown): BaseUrlResult {
   const isLocalHttp =
     parsed.protocol === "http:" &&
     (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1");
+  // Reject URL userinfo rather than returning it or including it in an error reason.
+  if (parsed.username || parsed.password) {
+    return { ok: false, reason: "gateway URL must not contain credentials" };
+  }
+
   if (parsed.protocol !== "https:" && !isLocalHttp) {
     return { ok: false, reason: "gateway URL must be https" };
   }
@@ -78,10 +83,12 @@ function storedApiKeyCommand(home: string): string {
   // Keep the credential out of command text; the command reads it from the auth file when resolved.
   const authPath = join(home, ".pi", "agent", "auth.json");
   const source = [
+    "try{",
     `const auth=JSON.parse(require("node:fs").readFileSync(${JSON.stringify(authPath)},"utf8"));`,
     "const credentials=auth?.litellm??{};",
     'const key=[credentials.key,credentials.apiKey,credentials.access].find(value=>typeof value==="string"&&value.length>0);',
-    "if(key)process.stdout.write(key);",
+    "if(key)process.stdout.write(key);else process.exit(1);",
+    "}catch{process.exit(1);}",
   ].join("");
 
   return `!node -e ${shellQuote(source)}`;

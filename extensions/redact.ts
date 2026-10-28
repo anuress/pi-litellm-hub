@@ -4,8 +4,8 @@ const URL_USERINFO = /(https?:\/\/)[^/\s?#]*@/gi;
 export function redact(text: string, key?: string): string {
   let result = text;
 
-  // Caller-supplied keys can be shorter or differently shaped than the generic pattern.
-  if (key && key.length > 0) {
+  // Ignore short caller keys so ordinary text is not corrupted; the shape rule handles key-like values.
+  if (key && key.length >= 8) {
     result = result.split(key).join("sk-***");
   }
 

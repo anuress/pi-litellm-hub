@@ -3,7 +3,12 @@ import test from "node:test";
 import { redact } from "../extensions/redact.ts";
 
 test("redacts the exact supplied key", () => {
-  assert.equal(redact("token=sk-test", "sk-test"), "token=sk-***");
+  const exactKey = "custom-token-1234";
+  assert.equal(redact(`token=${exactKey}`, exactKey), "token=sk-***");
+});
+
+test("ignores supplied keys shorter than eight characters", () => {
+  assert.equal(redact("The gateway", "a"), "The gateway");
 });
 
 test("redacts key-shaped text inside a sentence", () => {
