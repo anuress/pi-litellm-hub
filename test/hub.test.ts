@@ -44,17 +44,25 @@ function composeModelBaseUrl(providerConfig: any, modelId: string): string {
 function fakeRuntime() {
   const providers: Array<{ name: string; config: any }> = [];
   const commands = new Map<string, (args: string, ctx: any) => Promise<void> | void>();
-  const events = new Map<string, (event: any, ctx: any) => Promise<void> | void>();
-  const eventRegistrations = new Map<string, Array<(event: any, ctx: any) => Promise<void> | void>>();
+  type Handler = (event: any, ctx: any) => any;
+  const events = new Map<string, Handler>();
+  const eventRegistrations = new Map<string, Handler[]>();
   const pi = {
     registerProvider: (name: string, config: any) => providers.push({ name, config }),
     registerCommand: (name: string, definition: { handler: (args: string, ctx: any) => Promise<void> | void }) =>
       commands.set(name, definition.handler),
-    on: (event: string, handler: (event: any, ctx: any) => Promise<void> | void) => {
-      events.set(event, handler);
+    on: (event: string, handler: Handler) => {
       const registrations = eventRegistrations.get(event) ?? [];
       registrations.push(handler);
       eventRegistrations.set(event, registrations);
+      events.set(event, (value, ctx) => {
+        let result: any;
+        for (const registration of registrations) {
+          const next = registration(value, ctx);
+          if (next !== undefined) result = next;
+        }
+        return result;
+      });
       return () => events.delete(event);
     },
   };
@@ -318,12 +326,10 @@ test("configured hub wires transport and Claude cache observation", async () => 
   const runtime = fakeRuntime();
   await createHub(dependencies(runtime.pi, async () => responseFor(["chat-model", "claude-model"])));
 
-  for (const event of [
-    "before_provider_headers",
-    "after_provider_response",
-    "message_end",
-  ]) {
+  for (const event of ["before_provider_headers", "provider_stream_event", "before_provider_request"]) {
     assert.equal(runtime.eventRegistrations.get(event)?.length, 1, `${event} handler is registered`);
   }
-  assert.equal(runtime.eventRegistrations.get("before_provider_request")?.length, 1);
+  for (const event of ["after_provider_response", "message_end", "session_start"]) {
+    assert.equal(runtime.eventRegistrations.get(event)?.length, 2, `${event} hooks are composed`);
+  }
 });

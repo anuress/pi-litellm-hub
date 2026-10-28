@@ -7,6 +7,7 @@ import { redact } from "./redact.ts";
 import { newHubState, renderModelReport, updateStatus, type HubState } from "./status.ts";
 import { resolveKeyRef } from "./keyref.ts";
 import { registerTransport } from "./transport.ts";
+import { registerSpend } from "./spend.ts";
 
 export type HubDependencies = {
   pi: ExtensionAPI;
@@ -174,6 +175,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
     return state;
   }
 
+  registerSpend(pi, state, { config, apiKey, fetchImpl });
   try {
     installProvider(await discover());
   } catch (error) {
