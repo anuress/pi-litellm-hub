@@ -125,6 +125,11 @@ export function registerSpend(
   let pendingKeySpend: number | undefined;
   let keyWindowRequested = false;
 
+  pi.on("turn_start", () => {
+    turnCost = undefined;
+    pendingKeySpend = undefined;
+  });
+
   pi.on("provider_stream_event", (event) => {
     if (event.provider !== "litellm") return;
     const cost = costFromStreamEvent(event.api, event.data);
@@ -146,22 +151,44 @@ export function registerSpend(
     ) {
       return;
     }
-    if (!message.usage?.cost) {
+    let reconciledMessage = message;
+    let total: number;
+    let exact: boolean;
+    if (message.usage?.cost) {
+      const result = applyGatewayCost(message, turnCost);
+      reconciledMessage = result.message;
+      total = result.message.usage.cost.total;
+      exact = result.exact;
+    } else if (turnCost !== undefined) {
+      total = turnCost;
+      exact = true;
+      reconciledMessage = {
+        ...message,
+        usage: {
+          ...message.usage,
+          cost: {
+            input: 0,
+            output: turnCost,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: turnCost,
+          },
+        },
+      } as typeof message;
+    } else {
       turnCost = undefined;
       pendingKeySpend = undefined;
       return;
     }
 
-    const result = applyGatewayCost(message, turnCost);
-    const total = result.message.usage.cost.total;
     state.sessionCost += total;
-    if (!result.exact) state.sessionEstimated = true;
+    if (!exact) state.sessionEstimated = true;
     if (pendingKeySpend !== undefined) state.keySpend = pendingKeySpend + total;
 
     turnCost = undefined;
     pendingKeySpend = undefined;
     updateStatus(ctx, state, deps.apiKey);
-    if (result.exact) return { message: result.message };
+    if (exact) return { message: reconciledMessage };
   });
 
   pi.on("session_start", (_event, ctx) => {

@@ -182,6 +182,82 @@ test("loads only reset time and duration from a fake key-info response", async (
   });
 });
 
+test("turn_start clears orphaned stream and key-spend data before the next assistant message", () => {
+  const runtime = fakeRuntime();
+  const state = newHubState();
+  state.activeModelId = "test-model";
+  const { ctx, statuses } = fakeContext();
+  registerSpend(runtime.pi as any, state, { config: cfg, apiKey, fetchImpl: async () => new Response("{}") });
+
+  runtime.handlers.get("provider_stream_event")?.[0](
+    {
+      provider: "litellm",
+      api: "openai-responses",
+      model: "test-model",
+      data: { type: "response.completed", response: { usage: { cost: 0.01 } } },
+    },
+    ctx,
+  );
+  runtime.handlers.get("after_provider_response")?.[0](
+    { headers: { "x-litellm-key-spend": "74.70" } },
+    ctx,
+  );
+  runtime.handlers.get("turn_start")?.[0]({}, ctx);
+
+  const message = assistantMessage("openai-responses", 0.05);
+  const result = runtime.handlers.get("message_end")?.[0]({ message }, ctx);
+
+  assert.equal(result, undefined);
+  assert.equal(state.sessionCost, 0.05);
+  assert.equal(state.sessionEstimated, true);
+  assert.equal(state.keySpend, undefined);
+  assert.match(statuses.at(-1)?.text ?? "", /session ~\$0\.05 \(est\.\)/);
+});
+
+test("uses exact stream cost when the assistant message has no usage cost", () => {
+  const runtime = fakeRuntime();
+  const state = newHubState();
+  state.activeModelId = "test-model";
+  const { ctx, statuses } = fakeContext();
+  registerSpend(runtime.pi as any, state, { config: cfg, apiKey, fetchImpl: async () => new Response("{}") });
+
+  runtime.handlers.get("provider_stream_event")?.[0](
+    {
+      provider: "litellm",
+      api: "openai-responses",
+      model: "test-model",
+      data: { type: "response.completed", response: { usage: { cost: 0.01 } } },
+    },
+    ctx,
+  );
+  runtime.handlers.get("after_provider_response")?.[0](
+    { headers: { "x-litellm-key-spend": "74.70" } },
+    ctx,
+  );
+
+  const message = assistantMessage("openai-responses", 4);
+  const { cost: _cost, ...usage } = message.usage;
+  const messageWithoutCost = { ...message, usage };
+  const original = structuredClone(messageWithoutCost);
+  const result = runtime.handlers.get("message_end")?.[0]({ message: messageWithoutCost }, ctx) as {
+    message: ReturnType<typeof assistantMessage>;
+  };
+
+  assert.deepEqual(result.message.usage.cost, {
+    input: 0,
+    output: 0.01,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0.01,
+  });
+  assert.deepEqual(messageWithoutCost, original);
+  assert.equal("cost" in messageWithoutCost.usage, false);
+  assert.equal(state.sessionCost, 0.01);
+  assert.equal(state.sessionEstimated, false);
+  assert.ok(Math.abs((state.keySpend ?? 0) - 74.71) < 1e-12);
+  assert.match(statuses.at(-1)?.text ?? "", /session \$0\.01/);
+});
+
 test("a Claude estimate stays marked when a later GPT turn has exact cost", () => {
   const runtime = fakeRuntime();
   const state = newHubState();
