@@ -35,13 +35,13 @@ Store the API key in pi's credential file, `~/.pi/agent/auth.json`, under provid
 }
 ```
 
-Keep that file private (`chmod 600 ~/.pi/agent/auth.json`) and out of any dotfiles repository. The extension also accepts the key from the `LITELLM_API_KEY` environment variable, which takes precedence. For model calls, pi resolves a `!node -e` reference at request time; the hub resolves the credential at startup for its own gateway lookups. The raw key is never copied into provider or model definitions.
+Keep that file private (`chmod 600 ~/.pi/agent/auth.json`) and out of any dotfiles repository. The extension also accepts the key from the `LITELLM_API_KEY` environment variable, which takes precedence. For model calls, pi receives a reference (`$LITELLM_API_KEY`, or a `!node -e` command that reads `auth.json`) and resolves it at request time; the hub resolves the credential at startup for its own gateway lookups. The raw key is never copied into provider or model definitions.
 
 Use the gateway root URL. HTTPS is required except for `http://localhost` and `http://127.0.0.1`; URL userinfo (`user:password@`) is rejected. A trailing slash or `/v1` suffix is normalized away.
 
 ## Use and debug
 
-Gateway models are discovered from `/v1/models` and registered as provider `litellm`. Matched models use pi's built-in `anthropic-messages`, `openai-responses`, or `openai-completions` API. LiteLLM requests carry a `pi-litellm-hub/<version>` User-Agent and the current session ID in `x-litellm-session-id`. Select a discovered model in pi, or start pi with a model such as `litellm/MODEL_ID:LEVEL`.
+Gateway models are discovered from `/v1/models` and registered as provider `litellm`. Matched models use pi's built-in `anthropic-messages`, `openai-responses`, or `openai-completions` API. From the catalog entry the hub takes only the model description (name, reasoning, input types, cost, limits), the thinking levels, and model-specific flags such as Claude's adaptive thinking; it never inherits features of a provider's own API (such as OpenAI tool search), which the gateway does not forward. LiteLLM requests carry a `pi-litellm-hub/<version>` User-Agent and the current session ID in `x-litellm-session-id`. Select a discovered model in pi, or start pi with a model such as `litellm/MODEL_ID:LEVEL`.
 
 - `/litellm` lists matched model IDs, API, thinking levels, catalog source, and any model reason; it also lists skipped IDs and reasons, plus the last Claude cache result when available.
 - `/litellm refresh` fetches the catalog again. If it fails, the existing model list is kept and the failure is shown.
@@ -72,7 +72,7 @@ In another extension, listen before requesting the initial snapshot:
 ```ts
 pi.events.on("litellm-hub:state", (snapshot) => console.log(snapshot));
 pi.events.on("litellm-hub:failure", ({ model, reason, at }) => console.log({ model, reason, at }));
-pi.events.emit("litellm-hub:request");
+pi.events.emit("litellm-hub:request", {});
 ```
 
 Published strings are redacted. The events never publish the key, gateway URL or host, request headers, or config.
