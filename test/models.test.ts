@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import packageInfo from "../package.json" with { type: "json" };
-import { fetchGatewayIds, matchModels, type Catalog } from "../extensions/models.ts";
+import { fetchGatewayModels, matchModels, type Catalog } from "../extensions/models.ts";
 
 const fakeApiKey = ["sk", "abcdefgh12"].join("-");
 
@@ -170,6 +170,67 @@ test("uses a safe completion fallback and a reason for unknown chat ids", () => 
   });
 });
 
+test("uses gateway input limits conservatively and keeps catalog output limits", () => {
+  const result = matchModels(
+    ["gpt-6-luna", "gpt-5-mini", "z-ai/glm-5.3", "no-limits"],
+    fakeCatalog([
+      { provider: "openai", model: catalogModel() },
+      { provider: "openai", model: catalogModel({ id: "gpt-5-mini", contextWindow: 400000, maxTokens: 128000 }) },
+    ]),
+    [
+      { id: "gpt-6-luna", maxInputTokens: 922000, maxOutputTokens: 8192 },
+      { id: "gpt-5-mini", maxInputTokens: 272000, maxOutputTokens: 8192 },
+      { id: "z-ai/glm-5.3", maxInputTokens: 200000, maxOutputTokens: 32000 },
+      { id: "no-limits", mode: "chat" },
+    ],
+  );
+
+  const limits = Object.fromEntries(
+    result.models.map(({ id, model }) => [id, [model.contextWindow, model.maxTokens]]),
+  );
+  assert.deepEqual(limits, {
+    "gpt-6-luna": [256000, 32768],
+    "gpt-5-mini": [272000, 128000],
+    "z-ai/glm-5.3": [200000, 32000],
+    "no-limits": [128000, 16384],
+  });
+});
+
+test("keeps the first gateway record when trimmed IDs are duplicated", () => {
+  const result = matchModels(
+    [" chat-model ", "chat-model"],
+    fakeCatalog([]),
+    [
+      { id: " chat-model ", mode: "chat", maxInputTokens: 64000, maxOutputTokens: 2048 },
+      { id: "chat-model", mode: "embedding", maxInputTokens: 4096, maxOutputTokens: 1024 },
+    ],
+  );
+
+  assert.deepEqual(
+    result.models.map(({ id, model }) => [id, model.contextWindow, model.maxTokens]),
+    [["chat-model", 64000, 2048]],
+  );
+  assert.deepEqual(result.skipped, []);
+});
+
+test("uses gateway mode and falls back to ID filters only when mode is absent", () => {
+  const result = matchModels(
+    ["gpt-6-luna", "image-model", "chat-model", "text-embedding-3-small"],
+    fakeCatalog([{ provider: "openai", model: catalogModel() }]),
+    [
+      { id: "gpt-6-luna", mode: "image_generation" },
+      { id: "image-model", mode: "responses" },
+      { id: "chat-model", mode: "chat" },
+    ],
+  );
+
+  assert.deepEqual(result.models.map(({ id }) => id), ["image-model", "chat-model"]);
+  assert.deepEqual(result.skipped, [
+    { id: "gpt-6-luna", reason: "not a chat model" },
+    { id: "text-embedding-3-small", reason: "not a chat model" },
+  ]);
+});
+
 test("skips known non-chat ids that have no catalog match", () => {
   const ids = [
     "text-embedding-3-small",
@@ -227,7 +288,7 @@ test("rejects HTTP and opaque gateway redirects", async () => {
   const responses = [new Response("", { status: 302 }), { status: 0, type: "opaqueredirect" } as Response];
   for (const response of responses) {
     const fetchImpl: typeof fetch = async () => response;
-    await assert.rejects(fetchGatewayIds(cfg, fakeApiKey, fetchImpl), /redirect refused \(3xx\)/);
+    await assert.rejects(fetchGatewayModels(cfg, fakeApiKey, fetchImpl), /redirect refused \(3xx\)/);
   }
 });
 
@@ -237,7 +298,7 @@ test("redacts the API key from a gateway error body", async () => {
     new Response(`gateway rejected ${apiKey}`, { status: 403 });
 
   await assert.rejects(
-    fetchGatewayIds(
+    fetchGatewayModels(
       { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" },
       apiKey,
       fetchImpl,
@@ -250,25 +311,36 @@ test("redacts the API key from a gateway error body", async () => {
   );
 });
 
-test("fetches gateway model ids with manual redirects and the package user agent", async () => {
+test("fetches gateway model metadata with manual redirects and the package user agent", async () => {
   let requestUrl = "";
   let requestInit: RequestInit | undefined;
   const fetchImpl: typeof fetch = async (input, init) => {
     requestUrl = String(input);
     requestInit = init;
-    return new Response(JSON.stringify({ data: [{ id: "one" }, { id: "two" }, { id: 4 }] }), {
+    return new Response(JSON.stringify({ data: [
+      { id: "one", mode: "chat", max_input_tokens: 922000, max_output_tokens: 128000 },
+      { id: "two", mode: null, max_input_tokens: 0, max_output_tokens: "big" },
+      { id: "three", mode: 4, max_input_tokens: 3.5, max_output_tokens: -1 },
+      { id: "four", max_input_tokens: "many", max_output_tokens: 3.5 },
+      { id: 4 },
+    ] }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
   };
 
-  const ids = await fetchGatewayIds(
+  const listed = await fetchGatewayModels(
     { baseUrl: "https://litellm.example.com/", apiKeyRef: "$LITELLM_API_KEY" },
     fakeApiKey,
     fetchImpl,
   );
 
-  assert.deepEqual(ids, ["one", "two"]);
+  assert.deepEqual(listed, [
+    { id: "one", mode: "chat", maxInputTokens: 922000, maxOutputTokens: 128000 },
+    { id: "two" },
+    { id: "three" },
+    { id: "four" },
+  ]);
   assert.equal(requestUrl, "https://litellm.example.com/v1/models");
   assert.equal(requestInit?.method, "GET");
   assert.equal(requestInit?.redirect, "manual");
@@ -282,7 +354,7 @@ test("rejects a successful response without the documented data list", async () 
     new Response(JSON.stringify({ models: [{ id: fakeApiKey }] }), { status: 200 });
 
   await assert.rejects(
-    fetchGatewayIds(
+    fetchGatewayModels(
       { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" },
       fakeApiKey,
       fetchImpl,

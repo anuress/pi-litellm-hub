@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { registerClaude } from "./claude.ts";
 import { registerErrors } from "./errors.ts";
 import { loadConfig, type HubConfig } from "./config.ts";
-import { fetchGatewayIds } from "./gateway.ts";
+import { fetchGatewayModels } from "./gateway.ts";
 import { matchModels, type Catalog, type MatchedModel, type Skipped } from "./models.ts";
 import { redact } from "./redact.ts";
 import {
@@ -85,8 +85,8 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
           return fetchImpl(input, { ...init, signal: requestSignal });
         }
       : fetchImpl;
-    const ids = await fetchGatewayIds(config, apiKey, requestFetch);
-    return matchModels(ids, catalog);
+    const listed = await fetchGatewayModels(config, apiKey, requestFetch);
+    return matchModels(listed.map(({ id }) => id), catalog, listed);
   };
 
   const installProvider = (result: Discovery) => {

@@ -162,6 +162,31 @@ test("configured startup registers reference auth and only same-gateway model UR
   assert.equal(registration.config.models.some((model: any) => model.baseUrl === "https://foreign.example/v1"), false);
 });
 
+test("discovery applies gateway limits and skips modes outside chat APIs", async () => {
+  const runtime = fakeRuntime();
+  let fetchCalls = 0;
+  const fetchImpl: typeof fetch = async () => {
+    fetchCalls += 1;
+    return new Response(JSON.stringify({ data: [
+      { id: "chat-model", mode: "responses", max_input_tokens: 64000, max_output_tokens: 2048 },
+      { id: "claude-model", mode: "chat", max_input_tokens: 256000, max_output_tokens: 1 },
+      { id: "embedding-model", mode: "embedding", max_input_tokens: 4096 },
+    ] }), { status: 200 });
+  };
+  const state = await createHub(dependencies(runtime.pi, fetchImpl));
+
+  assert.equal(fetchCalls, 1);
+  assert.deepEqual(
+    state.models.map(({ id, model }) => [id, model.contextWindow, model.maxTokens]),
+    [["chat-model", 64000, 8192], ["claude-model", 128000, 8192]],
+  );
+  assert.deepEqual(state.skipped, [{ id: "embedding-model", reason: "not a chat model" }]);
+  assert.deepEqual(
+    runtime.providers[0].config.models.map(({ id, contextWindow, maxTokens }: any) => [id, contextWindow, maxTokens]),
+    [["chat-model", 64000, 8192], ["claude-model", 128000, 8192]],
+  );
+});
+
 test("offline provider refresh reuses loaded models without fetching or changing the reason", async () => {
   const runtime = fakeRuntime();
   let fetchCalls = 0;

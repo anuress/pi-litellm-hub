@@ -123,18 +123,37 @@ export async function gatewayGetJson(
   return payload;
 }
 
-export async function fetchGatewayIds(
+export type GatewayModel = {
+  id: string;
+  mode?: string;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+};
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+export async function fetchGatewayModels(
   cfg: HubConfig,
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<string[]> {
+): Promise<GatewayModel[]> {
   const payload = await gatewayGetJson(cfg, apiKey, "/v1/models", fetchImpl);
   if (!isRecord(payload) || !Array.isArray(payload.data)) {
     throw redactedError("gateway /v1/models returned an invalid model list", apiKey);
   }
-  return payload.data.flatMap((item: unknown) =>
-    isRecord(item) && typeof item.id === "string" ? [item.id] : [],
-  );
+  return payload.data.flatMap((item: unknown) => {
+    if (!isRecord(item) || typeof item.id !== "string") return [];
+    const maxInputTokens = positiveInteger(item.max_input_tokens);
+    const maxOutputTokens = positiveInteger(item.max_output_tokens);
+    return [{
+      id: item.id,
+      ...(typeof item.mode === "string" ? { mode: item.mode } : {}),
+      ...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
+      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    }];
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

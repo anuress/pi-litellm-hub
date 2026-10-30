@@ -1,6 +1,7 @@
+import type { GatewayModel } from "./gateway.ts";
 import { thinkingFor } from "./thinking.ts";
 
-export { fetchGatewayIds } from "./gateway.ts";
+export { fetchGatewayModels, type GatewayModel } from "./gateway.ts";
 
 export type Protocol = "anthropic-messages" | "openai-responses" | "openai-completions";
 
@@ -47,6 +48,7 @@ const VENDOR_PROVIDER_HINTS: Record<string, string> = {
 };
 const NON_CHAT_ID = /embedding|rerank|voyage|chirp|image|tts|whisper/i;
 const NON_CHAT_REASON = "not a chat model";
+const CHAT_MODES = new Set(["chat", "responses"]);
 
 function isRecord(value: unknown): value is Record<string, any> {
   // Arrays and null do not have the named fields used by gateway and catalog objects.
@@ -139,7 +141,7 @@ function preferredCandidates(
   return preferred;
 }
 
-function unknownChatModel(id: string): MatchedModel {
+function unknownChatModel(id: string, gatewayModel: GatewayModel | undefined): MatchedModel {
   // Unknown aliases get a conservative text-only model shape with a visible reason.
   const api: Protocol = "openai-completions";
   return {
@@ -154,8 +156,8 @@ function unknownChatModel(id: string): MatchedModel {
       reasoning: false,
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128000,
-      maxTokens: 16384,
+      contextWindow: gatewayModel?.maxInputTokens ?? 128000,
+      maxTokens: gatewayModel?.maxOutputTokens ?? 16384,
     },
   };
 }
@@ -186,9 +188,23 @@ function modelConfig(
   return result;
 }
 
+function smaller(catalogValue: unknown, gatewayValue: number | undefined): number | undefined {
+  if (gatewayValue === undefined) return undefined;
+  return typeof catalogValue === "number" && catalogValue > 0
+    ? Math.min(catalogValue, gatewayValue)
+    : gatewayValue;
+}
+
+function withGatewayContextWindow(matched: MatchedModel, gatewayModel: GatewayModel | undefined): MatchedModel {
+  const contextWindow = smaller(matched.model.contextWindow, gatewayModel?.maxInputTokens);
+  if (contextWindow === undefined) return matched;
+  return { ...matched, model: { ...matched.model, contextWindow } };
+}
+
 export function matchModels(
   ids: string[],
   catalog: Catalog,
+  gatewayModels: GatewayModel[] = [],
 ): { models: MatchedModel[]; skipped: Skipped[] } {
   const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
   const providers = catalog.providers();
@@ -196,13 +212,23 @@ export function matchModels(
   const ranks = providerRanks(providers);
   const models: MatchedModel[] = [];
   const skipped: Skipped[] = [];
+  const listedById = new Map<string, GatewayModel>();
+  for (const gatewayModel of gatewayModels) {
+    const id = gatewayModel.id.trim();
+    if (!listedById.has(id)) listedById.set(id, gatewayModel);
+  }
 
   for (const id of uniqueIds) {
+    const gatewayModel = listedById.get(id);
+    if (gatewayModel?.mode !== undefined && !CHAT_MODES.has(gatewayModel.mode)) {
+      skipped.push({ id, reason: NON_CHAT_REASON });
+      continue;
+    }
     const { candidates, vendorProviders } = candidatesForId(id, providers, entries);
     if (candidates.length === 0) {
-      // Known media/embedding names are not safe guesses for chat models.
-      if (NON_CHAT_ID.test(id)) skipped.push({ id, reason: NON_CHAT_REASON });
-      else models.push(unknownChatModel(id));
+      // Known media/embedding names are not safe guesses when gateway mode is absent.
+      if (gatewayModel?.mode === undefined && NON_CHAT_ID.test(id)) skipped.push({ id, reason: NON_CHAT_REASON });
+      else models.push(unknownChatModel(id, gatewayModel));
       continue;
     }
 
@@ -222,14 +248,14 @@ export function matchModels(
       : thinkingFor(first.model, id);
     const api = protocolFor(first.model.api);
 
-    models.push({
+    models.push(withGatewayContextWindow({
       id,
       api,
       catalogSource: first.provider,
       ...(thinking.levels !== undefined ? { levels: thinking.levels } : {}),
       ...(thinking.reason !== undefined ? { reason: thinking.reason } : {}),
       model: modelConfig(first.model, id, api, thinking.levels),
-    });
+    }, gatewayModel));
   }
 
   return { models, skipped };
