@@ -156,7 +156,7 @@ const PRICE_SOURCE_FIELDS = [
 function priceSourcesLabel(model: MatchedModel): string {
   const grouped = new Map<string, string[]>();
   for (const [field, label] of PRICE_SOURCE_FIELDS) {
-    const source = model.priceSources?.[field] ?? (model.catalogSource ? "pi catalog" : "default");
+    const source = model.priceSources?.[field] ?? "unavailable";
     const fields = grouped.get(source) ?? [];
     fields.push(label);
     grouped.set(source, fields);

@@ -4,6 +4,7 @@ import { redact } from "./redact.ts";
 
 const USER_AGENT = `pi-litellm-hub/${packageInfo.version}`;
 const ERROR_BODY_LIMIT = 4096;
+export const GATEWAY_TIMEOUT_MS = 10_000;
 
 function redactedError(message: string, apiKey: string): Error {
   return new Error(redact(message, apiKey));
@@ -22,7 +23,7 @@ function timedOut(signal: AbortSignal, error: unknown): boolean {
   return signal.aborted || isAbortError(error);
 }
 
-function timeoutError(path: string, timeoutMs: number, apiKey: string): Error {
+export function gatewayTimeoutError(path: string, timeoutMs: number, apiKey: string): Error {
   return redactedError(`gateway ${path} timed out after ${timeoutMs / 1000}s`, apiKey);
 }
 
@@ -71,7 +72,7 @@ export async function gatewayGetJson(
   apiKey: string,
   path: string,
   fetchImpl: typeof fetch = fetch,
-  timeoutMs = 10000,
+  timeoutMs = GATEWAY_TIMEOUT_MS,
 ): Promise<unknown> {
   const requestPath = path.startsWith("/") ? path : `/${path}`;
   const url = `${cfg.baseUrl.replace(/\/+$/, "")}${requestPath}`;
@@ -88,10 +89,10 @@ export async function gatewayGetJson(
       signal,
     });
   } catch (error) {
-    if (timedOut(signal, error)) throw timeoutError(requestPath, timeoutMs, apiKey);
+    if (timedOut(signal, error)) throw gatewayTimeoutError(requestPath, timeoutMs, apiKey);
     throw redactedError(`gateway ${requestPath} request failed: ${errorMessage(error)}`, apiKey);
   }
-  if (signal.aborted) throw timeoutError(requestPath, timeoutMs, apiKey);
+  if (signal.aborted) throw gatewayTimeoutError(requestPath, timeoutMs, apiKey);
 
   if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
     throw redactedError("redirect refused (3xx)", apiKey);
@@ -102,10 +103,10 @@ export async function gatewayGetJson(
     try {
       body = await readBoundedBody(response, ERROR_BODY_LIMIT);
     } catch (error) {
-      if (timedOut(signal, error)) throw timeoutError(requestPath, timeoutMs, apiKey);
+      if (timedOut(signal, error)) throw gatewayTimeoutError(requestPath, timeoutMs, apiKey);
       // The status remains useful even when a failed response body cannot be read.
     }
-    if (signal.aborted) throw timeoutError(requestPath, timeoutMs, apiKey);
+    if (signal.aborted) throw gatewayTimeoutError(requestPath, timeoutMs, apiKey);
     throw redactedError(
       `gateway ${requestPath} returned ${response.status}: ${body.slice(0, 200)}`,
       apiKey,
@@ -116,10 +117,10 @@ export async function gatewayGetJson(
   try {
     payload = await response.json();
   } catch (error) {
-    if (timedOut(signal, error)) throw timeoutError(requestPath, timeoutMs, apiKey);
+    if (timedOut(signal, error)) throw gatewayTimeoutError(requestPath, timeoutMs, apiKey);
     throw redactedError(`gateway ${requestPath} returned invalid JSON`, apiKey);
   }
-  if (signal.aborted) throw timeoutError(requestPath, timeoutMs, apiKey);
+  if (signal.aborted) throw gatewayTimeoutError(requestPath, timeoutMs, apiKey);
   return payload;
 }
 
@@ -143,8 +144,9 @@ export async function fetchGatewayModels(
   cfg: HubConfig,
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs = GATEWAY_TIMEOUT_MS,
 ): Promise<GatewayModel[]> {
-  const payload = await gatewayGetJson(cfg, apiKey, "/v1/models", fetchImpl);
+  const payload = await gatewayGetJson(cfg, apiKey, "/v1/models", fetchImpl, timeoutMs);
   if (!isRecord(payload) || !Array.isArray(payload.data)) {
     throw redactedError("gateway /v1/models returned an invalid model list", apiKey);
   }

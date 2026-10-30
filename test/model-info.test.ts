@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { discoverGatewayModels } from "../extensions/model-info.ts";
 import type { GatewayModel } from "../extensions/gateway.ts";
@@ -149,6 +150,65 @@ test("keeps a server error as the catalog-price fallback reason", async () => {
     renderStatus(Object.assign(newHubState(), { priceFallbackReason: result.priceFallbackReason })),
     "litellm · 0 models · prices: pi catalog (gateway /model_group/info returned 500)",
   );
+});
+
+test("shares one timeout budget when the second metadata route stalls", async () => {
+  const calls: string[] = [];
+  const timeoutMs = 300;
+  const fetchImpl: typeof fetch = (input, init) => {
+    const path = new URL(String(input)).pathname;
+    calls.push(path);
+    if (path === "/model_group/info") {
+      return new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return reject(new Error("missing abort signal"));
+        const timer = setTimeout(() => resolve(new Response("forbidden", { status: 403 })), timeoutMs * 2 / 3);
+        signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        }, { once: true });
+      });
+    }
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return reject(new Error("missing abort signal"));
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  };
+  const started = performance.now();
+
+  await assert.rejects(
+    discoverGatewayModels(config, apiKey, fetchImpl, timeoutMs),
+    /gateway \/model\/info timed out after 0\.\d+s/,
+  );
+
+  const elapsed = performance.now() - started;
+  assert.deepEqual(calls, ["/model_group/info", "/model/info"]);
+  assert.ok(elapsed < timeoutMs + 100, `discovery took ${elapsed}ms for a ${timeoutMs}ms budget`);
+});
+
+test("enforces the deadline when synchronous fetch work resolves late", async () => {
+  const calls: string[] = [];
+  const timeoutMs = 50;
+  const fetchImpl: typeof fetch = async (input) => {
+    calls.push(new URL(String(input)).pathname);
+    const workUntil = performance.now() + timeoutMs * 2;
+    while (performance.now() < workUntil) {
+      // Simulate event-loop-blocking fetch work; timeout callbacks cannot run while this is busy.
+    }
+    return {
+      type: "default",
+      status: 200,
+      json: async () => ({ data: [{ model_group: "late-model" }] }),
+    } as Response;
+  };
+
+  await assert.rejects(
+    discoverGatewayModels(config, apiKey, fetchImpl, timeoutMs),
+    /gateway \/model_group\/info timed out after 0\.05s/,
+  );
+  assert.deepEqual(calls, ["/model_group/info"]);
 });
 
 test("ignores garbage gateway fields and falls back per price field without changing limits", async () => {

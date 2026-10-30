@@ -1,7 +1,10 @@
+import { performance } from "node:perf_hooks";
 import type { HubConfig } from "./config.ts";
 import {
   fetchGatewayModels,
   gatewayGetJson,
+  gatewayTimeoutError,
+  GATEWAY_TIMEOUT_MS,
   type GatewayModel,
   type GatewayPriceField,
   type GatewayPrices,
@@ -129,6 +132,10 @@ function parseMetadata(payload: unknown, path: string, idField: "model_group" | 
   return merged;
 }
 
+function isTimeoutError(error: unknown): error is Error {
+  return error instanceof Error && /^gateway \/\S+ timed out after /.test(error.message);
+}
+
 function failureReason(path: string, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const status = message.match(/ returned (\d{3})(?::|$)/)?.[1];
@@ -144,7 +151,14 @@ export async function discoverGatewayModels(
   config: HubConfig,
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs = GATEWAY_TIMEOUT_MS,
 ): Promise<GatewayDiscovery> {
+  const deadline = performance.now() + timeoutMs;
+  const remainingTimeout = (path: string): number => {
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining <= 0) throw gatewayTimeoutError(path, timeoutMs, apiKey);
+    return remaining;
+  };
   const routes = [
     { path: "/model_group/info", idField: "model_group" as const },
     { path: "/model/info", idField: "model_name" as const },
@@ -154,10 +168,22 @@ export async function discoverGatewayModels(
 
   for (const route of routes) {
     try {
-      const payload = await gatewayGetJson(config, apiKey, route.path, fetchImpl);
+      const payload = await gatewayGetJson(
+        config,
+        apiKey,
+        route.path,
+        fetchImpl,
+        remainingTimeout(route.path),
+      );
+      remainingTimeout(route.path);
       // A usable metadata route already supplies IDs, so don't make a redundant /v1/models call.
-      return { models: parseMetadata(payload, route.path, route.idField) };
+      const models = parseMetadata(payload, route.path, route.idField);
+      remainingTimeout(route.path);
+      return { models };
     } catch (error) {
+      // A route timeout consumed the shared discovery budget; surface it instead of retrying.
+      if (isTimeoutError(error)) throw error;
+      remainingTimeout(route.path);
       const message = error instanceof Error ? error.message : String(error);
       const reason = failureReason(route.path, error);
       if (/ returned (?:401|403|404)(?::|$)/.test(message)) {
@@ -168,7 +194,20 @@ export async function discoverGatewayModels(
     }
   }
 
-  const models = await fetchGatewayModels(config, apiKey, fetchImpl);
+  let models: GatewayModel[];
+  try {
+    models = await fetchGatewayModels(
+      config,
+      apiKey,
+      fetchImpl,
+      remainingTimeout("/v1/models"),
+    );
+  } catch (error) {
+    if (isTimeoutError(error)) throw error;
+    remainingTimeout("/v1/models");
+    throw error;
+  }
+  remainingTimeout("/v1/models");
   return {
     models,
     priceFallbackReason: visibleFailure ?? quietFailure ?? "model metadata unavailable",
