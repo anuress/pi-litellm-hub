@@ -115,13 +115,63 @@ test("falls back to v1 models when neither metadata route is readable", async ()
   const calls: string[] = [];
   const result = await discoverGatewayModels(config, apiKey, routeFetcher({
     "/model_group/info": new Response("forbidden", { status: 403 }),
-    "/model/info": new Response("forbidden", { status: 403 }),
+    "/model/info": new Response(JSON.stringify({
+      detail: "Virtual key is not allowed to call this route. Tried to call route: /model/info",
+    }), { status: 403 }),
     "/v1/models": jsonResponse({ data: [{ id: "legacy-model", mode: "chat" }] }),
   }, calls));
 
   assert.deepEqual(calls, ["/model_group/info", "/model/info", "/v1/models"]);
   assert.deepEqual(result.models, [{ id: "legacy-model", mode: "chat" }]);
   assert.equal(result.priceFallbackReason, "key can't read /model/info");
+});
+
+test("describes rejected metadata credentials as key rejection", async () => {
+  const calls: string[] = [];
+  const result = await discoverGatewayModels(config, apiKey, routeFetcher({
+    "/model_group/info": new Response("invalid key", { status: 401 }),
+    "/model/info": new Response("invalid key", { status: 401 }),
+    "/v1/models": jsonResponse({ data: [{ id: "legacy-model" }] }),
+  }, calls));
+
+  assert.deepEqual(calls, ["/model_group/info", "/model/info", "/v1/models"]);
+  assert.equal(result.priceFallbackReason, "key rejected by /model/info (401)");
+});
+
+test("does not infer the cause of other metadata 403 responses", async () => {
+  const calls: string[] = [];
+  const result = await discoverGatewayModels(config, apiKey, routeFetcher({
+    "/model_group/info": new Response("forbidden", { status: 403 }),
+    "/model/info": new Response("forbidden", { status: 403 }),
+    "/v1/models": jsonResponse({ data: [{ id: "legacy-model" }] }),
+  }, calls));
+
+  assert.deepEqual(calls, ["/model_group/info", "/model/info", "/v1/models"]);
+  assert.equal(result.priceFallbackReason, "gateway /model/info returned 403");
+});
+
+test("surfaces a 403 access-denied page as Cloudflare over a later generic 403", async () => {
+  const calls: string[] = [];
+  const result = await discoverGatewayModels(config, apiKey, routeFetcher({
+    "/model_group/info": new Response("Access denied", { status: 403 }),
+    "/model/info": new Response("forbidden", { status: 403 }),
+    "/v1/models": jsonResponse({ data: [{ id: "legacy-model" }] }),
+  }, calls));
+
+  assert.deepEqual(calls, ["/model_group/info", "/model/info", "/v1/models"]);
+  assert.equal(result.priceFallbackReason, "/model_group/info blocked by Cloudflare (1010)");
+});
+
+test("keeps Cloudflare 1010 visible over a later quiet authorization failure", async () => {
+  const calls: string[] = [];
+  const result = await discoverGatewayModels(config, apiKey, routeFetcher({
+    "/model_group/info": new Response("<html><h1>Error 1010</h1></html>", { status: 429 }),
+    "/model/info": new Response("invalid key", { status: 401 }),
+    "/v1/models": jsonResponse({ data: [{ id: "legacy-model" }] }),
+  }, calls));
+
+  assert.deepEqual(calls, ["/model_group/info", "/model/info", "/v1/models"]);
+  assert.equal(result.priceFallbackReason, "/model_group/info blocked by Cloudflare (1010)");
 });
 
 test("treats missing metadata routes as quiet fallbacks", async () => {

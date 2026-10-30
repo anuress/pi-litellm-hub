@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import type { HubConfig } from "./config.ts";
+import { isCloudflareBlock, isRouteRestriction } from "./errors.ts";
 import {
   fetchGatewayModels,
   gatewayGetJson,
@@ -139,12 +140,22 @@ function isTimeoutError(error: unknown): error is Error {
 function failureReason(path: string, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const status = message.match(/ returned (\d{3})(?::|$)/)?.[1];
-  // Auth failures are routine fallback signals; keep the final route-specific explanation concise.
-  if (status === "401" || status === "403") return `key can't read ${path}`;
+  const statusCode = status ? Number(status) : undefined;
+  if (isRouteRestriction(statusCode, message)) return `key can't read ${path}`;
+  if (isCloudflareBlock(statusCode, message)) return `${path} blocked by Cloudflare (1010)`;
+  if (status === "401") return `key rejected by ${path} (401)`;
+  if (status === "403") return `gateway ${path} returned 403`;
   // A missing endpoint is distinct from a key that cannot read an existing route.
   if (status === "404") return `gateway ${path} unavailable (404)`;
   if (status) return `gateway ${path} returned ${status}`;
   return message === "redirect refused (3xx)" ? `gateway ${path} redirect refused (3xx)` : message;
+}
+
+function isQuietFailure(message: string): boolean {
+  const status = message.match(/ returned (\d{3})(?::|$)/)?.[1];
+  if (status !== "401" && status !== "403" && status !== "404") return false;
+  const statusCode = Number(status);
+  return !isCloudflareBlock(statusCode, message) || isRouteRestriction(statusCode, message);
 }
 
 export async function discoverGatewayModels(
@@ -186,7 +197,7 @@ export async function discoverGatewayModels(
       remainingTimeout(route.path);
       const message = error instanceof Error ? error.message : String(error);
       const reason = failureReason(route.path, error);
-      if (/ returned (?:401|403|404)(?::|$)/.test(message)) {
+      if (isQuietFailure(message)) {
         quietFailure = reason;
       } else {
         visibleFailure ??= reason;

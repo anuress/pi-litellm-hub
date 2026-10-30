@@ -21,6 +21,15 @@ type FailureInput = {
 
 export type ErrorsDependencies = { apiKey: string };
 
+export function isRouteRestriction(status: number | undefined, text: string): boolean {
+  return status === 403 && /\bnot allowed to call this route\b/i.test(text);
+}
+
+export function isCloudflareBlock(status: number | undefined, text: string): boolean {
+  return /\berror\s+1010\b|\berror\s+code\s*:\s*1010\b/i.test(text) ||
+    (status === 403 && /\baccess denied\b/i.test(text));
+}
+
 function truncate(text: string, limit: number): string {
   const safeLimit = Number.isNaN(limit)
     ? MAX_REASON_LENGTH
@@ -185,13 +194,8 @@ export function classifyFailure(input: FailureInput): string | undefined {
   if (/max_parallel_requests|max parallel request limit reached/i.test(text)) {
     return "failed: gateway busy (parallel request limit)";
   }
-  if (status === 403 && /\bnot allowed to call this route\b/i.test(text)) {
-    return routePermissionReason(text);
-  }
-  if (
-    /\berror\s+1010\b|\berror\s+code\s*:\s*1010\b/i.test(text) ||
-    (status === 403 && /\baccess denied\b/i.test(text))
-  ) {
+  if (isRouteRestriction(status, text)) return routePermissionReason(text);
+  if (isCloudflareBlock(status, text)) {
     return "failed: blocked by Cloudflare (1010), not a key problem";
   }
   if (status === 200) {

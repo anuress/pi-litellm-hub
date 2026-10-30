@@ -193,7 +193,11 @@ test("metadata route denial explains catalog pricing in status and the model rep
   const fetchImpl: typeof fetch = async (input) => {
     const path = new URL(String(input)).pathname;
     paths.push(path);
-    return path === "/v1/models" ? responseFor(["chat-model"]) : new Response("forbidden", { status: 403 });
+    return path === "/v1/models"
+      ? responseFor(["chat-model"])
+      : new Response(JSON.stringify({
+          detail: "Virtual key is not allowed to call this route. Tried to call route: /model/info",
+        }), { status: 403 });
   };
   const state = await createHub(dependencies(runtime.pi, fetchImpl));
   const { ctx, statuses, notifications } = fakeContext();
