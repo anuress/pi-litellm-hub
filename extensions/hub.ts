@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { registerClaude } from "./claude.ts";
 import { registerErrors } from "./errors.ts";
 import { loadConfig, type HubConfig } from "./config.ts";
-import { fetchGatewayModels } from "./gateway.ts";
+import { discoverGatewayModels } from "./model-info.ts";
 import { matchModels, type Catalog, type MatchedModel, type Skipped } from "./models.ts";
 import { redact } from "./redact.ts";
 import {
@@ -26,7 +26,7 @@ export type HubDependencies = {
   resolveKey: typeof resolveKeyRef;
 };
 
-type Discovery = { models: MatchedModel[]; skipped: Skipped[] };
+type Discovery = { models: MatchedModel[]; skipped: Skipped[]; priceFallbackReason?: string };
 
 function errorText(error: unknown, key?: string, host?: string): string {
   try {
@@ -85,8 +85,11 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
           return fetchImpl(input, { ...init, signal: requestSignal });
         }
       : fetchImpl;
-    const listed = await fetchGatewayModels(config, apiKey, requestFetch);
-    return matchModels(listed.map(({ id }) => id), catalog, listed);
+    const listed = await discoverGatewayModels(config, apiKey, requestFetch);
+    return {
+      ...matchModels(listed.models.map(({ id }) => id), catalog, listed.models),
+      ...(listed.priceFallbackReason ? { priceFallbackReason: listed.priceFallbackReason } : {}),
+    };
   };
 
   const installProvider = (result: Discovery) => {
@@ -113,12 +116,14 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
         if (signal.aborted) throw new Error("gateway refresh aborted");
         state.models = refreshed.models;
         state.skipped = refreshed.skipped;
+        state.priceFallbackReason = refreshed.priceFallbackReason;
         state.reason = undefined;
         return providerModels(refreshed.models, config);
       },
     });
     state.models = result.models;
     state.skipped = result.skipped;
+    state.priceFallbackReason = result.priceFallbackReason;
     state.reason = undefined;
   };
 

@@ -62,6 +62,7 @@ test("matches an exact catalog id and preserves its effort map and provider sour
     api: "openai-responses",
     catalogSource: "openai",
     levels: efforts,
+    priceSources: { input: "pi catalog", output: "pi catalog", cacheRead: "pi catalog", cacheWrite: "pi catalog" },
     model: {
       id: "gpt-6-luna",
       name: "GPT-6 Luna",
@@ -155,6 +156,7 @@ test("uses a safe completion fallback and a reason for unknown chat ids", () => 
   assert.deepEqual(result.models[0], {
     id,
     api: "openai-completions",
+    priceSources: { input: "default", output: "default", cacheRead: "default", cacheWrite: "default" },
     reason: "not in pi's catalog",
     model: {
       type: "chat",

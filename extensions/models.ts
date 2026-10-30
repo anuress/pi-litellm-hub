@@ -1,4 +1,6 @@
 import type { GatewayModel } from "./gateway.ts";
+import type { PriceSources } from "./pricing.ts";
+import { withGatewayPrices } from "./pricing.ts";
 import { thinkingFor } from "./thinking.ts";
 
 export { fetchGatewayModels, type GatewayModel } from "./gateway.ts";
@@ -10,6 +12,7 @@ export type MatchedModel = {
   api: Protocol;
   catalogSource?: string;
   levels?: Record<string, string | null>;
+  priceSources?: PriceSources;
   reason?: string;
   model: Record<string, unknown>;
 };
@@ -228,7 +231,7 @@ export function matchModels(
     if (candidates.length === 0) {
       // Known media/embedding names are not safe guesses when gateway mode is absent.
       if (gatewayModel?.mode === undefined && NON_CHAT_ID.test(id)) skipped.push({ id, reason: NON_CHAT_REASON });
-      else models.push(unknownChatModel(id, gatewayModel));
+      else models.push(withGatewayPrices(unknownChatModel(id, gatewayModel), gatewayModel));
       continue;
     }
 
@@ -248,14 +251,14 @@ export function matchModels(
       : thinkingFor(first.model, id);
     const api = protocolFor(first.model.api);
 
-    models.push(withGatewayContextWindow({
+    models.push(withGatewayPrices(withGatewayContextWindow({
       id,
       api,
       catalogSource: first.provider,
       ...(thinking.levels !== undefined ? { levels: thinking.levels } : {}),
       ...(thinking.reason !== undefined ? { reason: thinking.reason } : {}),
       model: modelConfig(first.model, id, api, thinking.levels),
-    }, gatewayModel));
+    }, gatewayModel), gatewayModel));
   }
 
   return { models, skipped };

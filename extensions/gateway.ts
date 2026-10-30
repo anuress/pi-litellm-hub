@@ -123,11 +123,16 @@ export async function gatewayGetJson(
   return payload;
 }
 
+export type GatewayPriceField = "input" | "output" | "cacheRead" | "cacheWrite";
+// Prices use pi's cost unit: USD per million tokens.
+export type GatewayPrices = Partial<Record<GatewayPriceField, number>>;
+
 export type GatewayModel = {
   id: string;
   mode?: string;
   maxInputTokens?: number;
   maxOutputTokens?: number;
+  prices?: GatewayPrices;
 };
 
 function positiveInteger(value: unknown): number | undefined {

@@ -8,6 +8,7 @@ export type HubState = {
   skipped: Skipped[];
   activeModelId?: string;
   thinking?: string;
+  priceFallbackReason?: string;
   reason?: string;
   sessionCost: number;
   sessionEstimated: boolean;
@@ -118,6 +119,10 @@ function routeSignalSegment(state: HubState): string {
   return signals.length > 0 ? ` · ${signals.join(" · ")}` : "";
 }
 
+function priceFallbackSegment(state: HubState): string {
+  return state.priceFallbackReason ? ` · prices: pi catalog (${state.priceFallbackReason})` : "";
+}
+
 export function renderStatus(state: HubState): string {
   // Configuration errors take precedence over empty model and spend data.
   if (state.notConfigured) return `litellm · not configured: ${state.notConfigured}`;
@@ -126,19 +131,39 @@ export function renderStatus(state: HubState): string {
   if (state.activeModelId) {
     const model = `litellm · ${state.activeModelId}`;
     // A failure reason replaces the normal model tail instead of hiding the failure.
-    if (state.reason) return `${model} · ${state.reason}${routeSignals}`;
+    if (state.reason) return `${model} · ${state.reason}${routeSignals}${priceFallbackSegment(state)}`;
 
     const thinking = state.thinking ?? "default";
     const estimate = state.sessionEstimated ? "~" : "";
     const estimatedLabel = state.sessionEstimated ? " (est.)" : "";
     const session = `session ${estimate}$${state.sessionCost.toFixed(2)}${estimatedLabel}`;
-    return `${model} · thinking ${thinking} · ${session}${spendSegment(state)}${routeSignals}`;
+    return `${model} · thinking ${thinking} · ${session}${spendSegment(state)}${routeSignals}${priceFallbackSegment(state)}`;
   }
 
   // Without an active model, retain the catalog count while making startup failures visible.
   const count = `litellm · ${state.models.length} models`;
   const reason = state.reason ? ` · ${state.reason}` : "";
-  return `${count}${reason}${spendSegment(state)}${routeSignals}`;
+  return `${count}${reason}${spendSegment(state)}${routeSignals}${priceFallbackSegment(state)}`;
+}
+
+const PRICE_SOURCE_FIELDS = [
+  ["input", "input"],
+  ["output", "output"],
+  ["cacheRead", "cache read"],
+  ["cacheWrite", "cache write"],
+] as const;
+
+function priceSourcesLabel(model: MatchedModel): string {
+  const grouped = new Map<string, string[]>();
+  for (const [field, label] of PRICE_SOURCE_FIELDS) {
+    const source = model.priceSources?.[field] ?? (model.catalogSource ? "pi catalog" : "default");
+    const fields = grouped.get(source) ?? [];
+    fields.push(label);
+    grouped.set(source, fields);
+  }
+  return [...grouped].map(([source, fields]) =>
+    fields.length === PRICE_SOURCE_FIELDS.length ? source : `${source} (${fields.join(", ")})`,
+  ).join(" + ");
 }
 
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -164,6 +189,7 @@ export function renderModelReport(state: HubState): string {
   const lines = [`LiteLLM models: ${state.models.length} matched, ${state.skipped.length} skipped`];
   for (const model of state.models) {
     const fields = [model.id, model.api, levelsLabel(model), model.catalogSource ?? "unknown"];
+    fields.push(`prices: ${priceSourcesLabel(model)}`);
     if (model.reason) fields.push(model.reason);
     lines.push(`- ${fields.join(" | ")}`);
   }

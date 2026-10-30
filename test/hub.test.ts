@@ -32,7 +32,7 @@ const catalog: Catalog = {
 };
 
 function responseFor(ids: string[], status = 200, body?: string): Response {
-  return new Response(body ?? JSON.stringify({ data: ids.map((id) => ({ id })) }), { status });
+  return new Response(body ?? JSON.stringify({ data: ids.map((id) => ({ id, model_group: id })) }), { status });
 }
 
 function composeModelBaseUrl(providerConfig: any, modelId: string): string {
@@ -168,9 +168,9 @@ test("discovery applies gateway limits and skips modes outside chat APIs", async
   const fetchImpl: typeof fetch = async () => {
     fetchCalls += 1;
     return new Response(JSON.stringify({ data: [
-      { id: "chat-model", mode: "responses", max_input_tokens: 64000, max_output_tokens: 2048 },
-      { id: "claude-model", mode: "chat", max_input_tokens: 256000, max_output_tokens: 1 },
-      { id: "embedding-model", mode: "embedding", max_input_tokens: 4096 },
+      { id: "chat-model", model_group: "chat-model", mode: "responses", max_input_tokens: 64000, max_output_tokens: 2048 },
+      { id: "claude-model", model_group: "claude-model", mode: "chat", max_input_tokens: 256000, max_output_tokens: 1 },
+      { id: "embedding-model", model_group: "embedding-model", mode: "embedding", max_input_tokens: 4096 },
     ] }), { status: 200 });
   };
   const state = await createHub(dependencies(runtime.pi, fetchImpl));
@@ -185,6 +185,32 @@ test("discovery applies gateway limits and skips modes outside chat APIs", async
     runtime.providers[0].config.models.map(({ id, contextWindow, maxTokens }: any) => [id, contextWindow, maxTokens]),
     [["chat-model", 64000, 8192], ["claude-model", 128000, 8192]],
   );
+});
+
+test("metadata route denial explains catalog pricing in status and the model report", async () => {
+  const runtime = fakeRuntime();
+  const paths: string[] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    const path = new URL(String(input)).pathname;
+    paths.push(path);
+    return path === "/v1/models" ? responseFor(["chat-model"]) : new Response("forbidden", { status: 403 });
+  };
+  const state = await createHub(dependencies(runtime.pi, fetchImpl));
+  const { ctx, statuses, notifications } = fakeContext();
+
+  await runtime.events.get("session_start")?.({}, ctx);
+  const status = statuses.at(-1)?.text ?? "";
+
+  assert.deepEqual(paths.filter((path) => path !== "/key/info"), [
+    "/model_group/info",
+    "/model/info",
+    "/v1/models",
+  ]);
+  assert.equal(status, "litellm · 1 models · prices: pi catalog (key can't read /model/info)");
+  assert.equal((status.match(/prices: pi catalog/g) ?? []).length, 1);
+  await runtime.commands.get("litellm")?.("", ctx);
+  assert.match(notifications.at(-1)?.message ?? "", /prices: pi catalog/);
+  assert.equal(state.priceFallbackReason, "key can't read /model/info");
 });
 
 test("offline provider refresh reuses loaded models without fetching or changing the reason", async () => {
@@ -237,7 +263,7 @@ test("startup plus pi offline refresh makes one gateway request total", async ()
   const fetchImpl: typeof fetch = async (input) => {
     fetchCalls += 1;
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    assert.equal(new URL(url).pathname, "/v1/models");
+    assert.equal(new URL(url).pathname, "/model_group/info");
     return responseFor(["chat-model"]);
   };
   await createHub(dependencies(runtime.pi, fetchImpl));
