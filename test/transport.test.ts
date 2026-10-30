@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import packageInfo from "../package.json" with { type: "json" };
-import { applyChatUsageFlag, applyLiteLLMHeaders, readSpendHeaders, registerTransport, USER_AGENT } from "../extensions/transport.ts";
+import { applyChatUsageFlag, applyLiteLLMHeaders, readAttemptHeaders, readSpendHeaders, registerTransport, USER_AGENT } from "../extensions/transport.ts";
 import { newHubState } from "../extensions/status.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -86,6 +86,38 @@ test("reads numeric spend headers case-insensitively and ignores invalid values"
   assert.deepEqual(readSpendHeaders({ "X-LiteLLM-Key-Spend": "abc" }), {});
 });
 
+test("reads fallback and retry headers as non-negative integers case-insensitively", () => {
+  assert.deepEqual(
+    readAttemptHeaders({
+      "X-LiteLLM-Attempted-Fallbacks": "2",
+      "x-litellm-attempted-retries": "3",
+    }),
+    { attemptedFallbacks: 2, attemptedRetries: 3 },
+  );
+  assert.deepEqual(readAttemptHeaders({}), {});
+  assert.deepEqual(
+    readAttemptHeaders({
+      "x-litellm-attempted-fallbacks": "-1",
+      "x-litellm-attempted-retries": "1.5",
+    }),
+    {},
+  );
+  assert.deepEqual(
+    readAttemptHeaders({
+      "x-litellm-attempted-fallbacks": "garbage",
+      "x-litellm-attempted-retries": "1e308",
+    }),
+    {},
+  );
+  assert.deepEqual(
+    readAttemptHeaders({
+      "x-litellm-attempted-fallbacks": "0",
+      "x-litellm-attempted-retries": "0",
+    }),
+    { attemptedFallbacks: 0, attemptedRetries: 0 },
+  );
+});
+
 test("provider hooks leave another provider's headers and payload untouched", () => {
   const { pi, handlers } = fakeRuntime();
   const state = newHubState();
@@ -109,6 +141,31 @@ test("provider hooks leave another provider's headers and payload untouched", ()
   assert.equal(statuses.length, 0);
 });
 
+test("invalid attempt headers clear stale route signals", () => {
+  const { pi, handlers } = fakeRuntime();
+  const state = newHubState();
+  state.activeModelId = "chat-model";
+  state.attemptedFallbacks = 1;
+  state.attemptedRetries = 2;
+  registerTransport(pi, state);
+  const { ctx, statuses } = fakeContext("litellm", "openai-completions");
+
+  handlers.get("after_provider_response")?.[0](
+    {
+      status: 200,
+      headers: {
+        "x-litellm-attempted-fallbacks": "garbage",
+        "x-litellm-attempted-retries": "-1",
+      },
+    },
+    ctx,
+  );
+
+  assert.equal(state.attemptedFallbacks, undefined);
+  assert.equal(state.attemptedRetries, undefined);
+  assert.doesNotMatch(statuses.at(-1)?.text ?? "", /fallback|retry×/);
+});
+
 test("registered hooks add request metadata and update spend status for LiteLLM", () => {
   const { pi, handlers } = fakeRuntime();
   const state = newHubState();
@@ -130,6 +187,8 @@ test("registered hooks add request metadata and update spend status for LiteLLM"
       headers: {
         "X-LiteLLM-Key-Spend": "74.73",
         "X-LiteLLM-Key-Max-Budget": "200",
+        "X-LiteLLM-Attempted-Fallbacks": "1",
+        "x-litellm-attempted-retries": "2",
       },
     },
     ctx,
@@ -141,6 +200,14 @@ test("registered hooks add request metadata and update spend status for LiteLLM"
   assert.equal(transformed.stream_options.include_usage, true);
   assert.equal(state.keySpend, 74.73);
   assert.equal(state.keyBudget, 200);
+  assert.equal(state.attemptedFallbacks, 1);
+  assert.equal(state.attemptedRetries, 2);
   assert.equal(statuses.at(-1)?.key, "litellm");
   assert.match(statuses.at(-1)?.text ?? "", /\$74\.73\/\$200/);
+  assert.match(statuses.at(-1)?.text ?? "", / · fallback · retry×2$/);
+
+  handlers.get("turn_start")?.[0]({}, ctx);
+  assert.equal(state.attemptedFallbacks, undefined);
+  assert.equal(state.attemptedRetries, undefined);
+  assert.doesNotMatch(statuses.at(-1)?.text ?? "", /fallback|retry×/);
 });

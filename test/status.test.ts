@@ -32,6 +32,25 @@ test("renders the complete normal status line with month spend and UTC reset dat
   );
 });
 
+test("shows fallback and retry markers only for positive attempt counts", () => {
+  assert.equal(
+    renderStatus(activeState({ attemptedFallbacks: 1 })),
+    "litellm · model-one · thinking high · session $0.12 · fallback",
+  );
+  assert.equal(
+    renderStatus(activeState({ attemptedRetries: 2 })),
+    "litellm · model-one · thinking high · session $0.12 · retry×2",
+  );
+  assert.equal(
+    renderStatus(activeState({ attemptedFallbacks: 1, attemptedRetries: 2 })),
+    "litellm · model-one · thinking high · session $0.12 · fallback · retry×2",
+  );
+  assert.equal(
+    renderStatus(activeState({ attemptedFallbacks: 0, attemptedRetries: 0 })),
+    "litellm · model-one · thinking high · session $0.12",
+  );
+});
+
 test("renders estimated session cost with the exact estimate marker", () => {
   assert.equal(
     renderStatus(activeState({ sessionEstimated: true })),
@@ -51,10 +70,14 @@ test("uses a non-month window label", () => {
   );
 });
 
-test("a reason replaces the active model details", () => {
+test("a reason replaces the active model details but retains route signals", () => {
   assert.equal(
     renderStatus(activeState({ reason: "gateway unavailable", ...spend })),
     "litellm · model-one · gateway unavailable",
+  );
+  assert.equal(
+    renderStatus(activeState({ reason: "gateway unavailable", attemptedRetries: 2 })),
+    "litellm · model-one · gateway unavailable · retry×2",
   );
 });
 
@@ -111,7 +134,11 @@ test("updateStatus redacts a key embedded in the status reason", () => {
 test("snapshot uses an exact allowlist and redacts its reason", () => {
   const fakeKey = ["sk", "abcdefgh12"].join("-");
   const host = "litellm.example.com";
-  const state = activeState({ reason: `failed at https://${host} with ${fakeKey}` });
+  const state = activeState({
+    reason: `failed at https://${host} with ${fakeKey}`,
+    attemptedFallbacks: 1,
+    attemptedRetries: 2,
+  });
   state.models.push({
     id: "model-one",
     api: "openai-responses",
@@ -123,6 +150,8 @@ test("snapshot uses an exact allowlist and redacts its reason", () => {
 
   assert.deepEqual(Object.keys(snapshot).sort(), [
     "at",
+    "attemptedFallbacks",
+    "attemptedRetries",
     "configured",
     "keyBudget",
     "keySpend",
@@ -141,6 +170,8 @@ test("snapshot uses an exact allowlist and redacts its reason", () => {
   assert.deepEqual(snapshot.levelsAvailable, supportedLevels(state.models[0]));
   assert.deepEqual(snapshot.levelsAvailable, ["off", "minimal", "low", "medium", "high", "max"]);
   assert.equal(snapshot.configured, true);
+  assert.equal(snapshot.attemptedFallbacks, 1);
+  assert.equal(snapshot.attemptedRetries, 2);
   const serialized = JSON.stringify(snapshot);
   assert.equal(serialized.includes(fakeKey), false);
   assert.equal(serialized.includes(host), false);

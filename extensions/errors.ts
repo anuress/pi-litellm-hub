@@ -168,6 +168,11 @@ function budgetReason(text: string, state?: FailureState): string {
   return `failed: out of budget ($${budgetAmount(spend)}/$${budgetAmount(budget)}${reset})`;
 }
 
+function routePermissionReason(text: string): string {
+  const route = text.match(/\btried to call route:\s*(\/[^\s"'<>]+)/i)?.[1];
+  return `failed: key not allowed to call ${route ? truncate(route, 65) : "this route"}; ask the gateway admin`;
+}
+
 export function classifyFailure(input: FailureInput): string | undefined {
   const text = failureText(input);
   // Prefer an explicit HTTP status in the SDK's error string over a possibly stale 200 stream callback.
@@ -180,8 +185,14 @@ export function classifyFailure(input: FailureInput): string | undefined {
   if (/max_parallel_requests|max parallel request limit reached/i.test(text)) {
     return "failed: gateway busy (parallel request limit)";
   }
-  if (/\berror\s+1010\b|\berror\s+code\s*:\s*1010\b/i.test(text)) {
-    return "failed: blocked by Cloudflare (1010)";
+  if (status === 403 && /\bnot allowed to call this route\b/i.test(text)) {
+    return routePermissionReason(text);
+  }
+  if (
+    /\berror\s+1010\b|\berror\s+code\s*:\s*1010\b/i.test(text) ||
+    (status === 403 && /\baccess denied\b/i.test(text))
+  ) {
+    return "failed: blocked by Cloudflare (1010), not a key problem";
   }
   if (status === 200) {
     return `${STREAM_ERROR_PREFIX}${shortMessage(input.errorMessage || input.body || "", MAX_REASON_LENGTH - STREAM_ERROR_PREFIX.length)}`;

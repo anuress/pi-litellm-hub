@@ -60,6 +60,23 @@ function numericHeader(headers: Record<string, string>, name: string): number | 
   return undefined;
 }
 
+function nonNegativeIntegerHeader(headers: Record<string, string>, name: string): number | undefined {
+  const value = numericHeader(headers, name);
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+export function readAttemptHeaders(headers: Record<string, string>): {
+  attemptedFallbacks?: number;
+  attemptedRetries?: number;
+} {
+  const attemptedFallbacks = nonNegativeIntegerHeader(headers, "x-litellm-attempted-fallbacks");
+  const attemptedRetries = nonNegativeIntegerHeader(headers, "x-litellm-attempted-retries");
+  return {
+    ...(attemptedFallbacks !== undefined ? { attemptedFallbacks } : {}),
+    ...(attemptedRetries !== undefined ? { attemptedRetries } : {}),
+  };
+}
+
 export function readSpendHeaders(headers: Record<string, string>): {
   keySpend?: number;
   keyBudget?: number;
@@ -92,9 +109,18 @@ export function registerTransport(
     return applyChatUsageFlag(ctx.model.api, event.payload);
   });
 
+  pi.on("turn_start", (_event, ctx) => {
+    state.attemptedFallbacks = undefined;
+    state.attemptedRetries = undefined;
+    updateStatus(ctx, state);
+  });
+
   pi.on("after_provider_response", (event, ctx) => {
     // Ignore unrelated response headers before touching spend state or status.
     if (ctx.model?.provider !== "litellm") return;
+    const attempts = readAttemptHeaders(event.headers);
+    state.attemptedFallbacks = attempts.attemptedFallbacks;
+    state.attemptedRetries = attempts.attemptedRetries;
     const spend = readSpendHeaders(event.headers);
     if (spend.keySpend !== undefined) state.keySpend = spend.keySpend;
     if (spend.keyBudget !== undefined) state.keyBudget = spend.keyBudget;

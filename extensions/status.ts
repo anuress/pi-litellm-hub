@@ -13,6 +13,8 @@ export type HubState = {
   sessionEstimated: boolean;
   keySpend?: number;
   keyBudget?: number;
+  attemptedFallbacks?: number;
+  attemptedRetries?: number;
   lastCache?: string;
   resetAt?: string;
   window?: string;
@@ -54,6 +56,8 @@ export function hubSnapshot(
     sessionEstimated: state.sessionEstimated,
     keySpend: state.keySpend,
     keyBudget: state.keyBudget,
+    attemptedFallbacks: state.attemptedFallbacks,
+    attemptedRetries: state.attemptedRetries,
     resetAt: safeText(state.resetAt),
     window: safeText(state.window),
     lastCache: safeText(state.lastCache),
@@ -106,26 +110,35 @@ function spendSegment(state: HubState): string {
   return ` · ${segment}`;
 }
 
+function routeSignalSegment(state: HubState): string {
+  const signals: string[] = [];
+  const retries = state.attemptedRetries ?? 0;
+  if ((state.attemptedFallbacks ?? 0) > 0) signals.push("fallback");
+  if (retries > 0) signals.push(`retry×${retries}`);
+  return signals.length > 0 ? ` · ${signals.join(" · ")}` : "";
+}
+
 export function renderStatus(state: HubState): string {
   // Configuration errors take precedence over empty model and spend data.
   if (state.notConfigured) return `litellm · not configured: ${state.notConfigured}`;
 
+  const routeSignals = routeSignalSegment(state);
   if (state.activeModelId) {
     const model = `litellm · ${state.activeModelId}`;
     // A failure reason replaces the normal model tail instead of hiding the failure.
-    if (state.reason) return `${model} · ${state.reason}`;
+    if (state.reason) return `${model} · ${state.reason}${routeSignals}`;
 
     const thinking = state.thinking ?? "default";
     const estimate = state.sessionEstimated ? "~" : "";
     const estimatedLabel = state.sessionEstimated ? " (est.)" : "";
     const session = `session ${estimate}$${state.sessionCost.toFixed(2)}${estimatedLabel}`;
-    return `${model} · thinking ${thinking} · ${session}${spendSegment(state)}`;
+    return `${model} · thinking ${thinking} · ${session}${spendSegment(state)}${routeSignals}`;
   }
 
   // Without an active model, retain the catalog count while making startup failures visible.
   const count = `litellm · ${state.models.length} models`;
   const reason = state.reason ? ` · ${state.reason}` : "";
-  return `${count}${reason}${spendSegment(state)}`;
+  return `${count}${reason}${spendSegment(state)}${routeSignals}`;
 }
 
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];

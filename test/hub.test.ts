@@ -329,6 +329,8 @@ test("state requests publish the current allowlisted, redacted snapshot", async 
   const snapshot = snapshots[0] as Record<string, unknown>;
   assert.deepEqual(Object.keys(snapshot).sort(), [
     "at",
+    "attemptedFallbacks",
+    "attemptedRetries",
     "configured",
     "keyBudget",
     "keySpend",

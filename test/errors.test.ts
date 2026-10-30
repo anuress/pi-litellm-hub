@@ -128,9 +128,58 @@ test("classifies Cloudflare 1010 HTML as a short plain-text reason", () => {
     "403: <!DOCTYPE html><html><body><h1>Error 1010</h1><p>error code: 1010</p></body></html>";
   const reason = classifyFailure({ errorMessage });
 
-  assert.equal(reason, "failed: blocked by Cloudflare (1010)");
+  assert.equal(reason, "failed: blocked by Cloudflare (1010), not a key problem");
   assert.ok((reason?.length ?? 0) <= 120);
   assert.equal(/[<>]/.test(reason ?? ""), false);
+  assert.equal(
+    classifyFailure({ status: 403, body: "<html><body>Access denied</body></html>" }),
+    "failed: blocked by Cloudflare (1010), not a key problem",
+  );
+});
+
+test("classifies a route-scoped virtual-key 403 using only the tried route", () => {
+  const body = JSON.stringify({
+    detail: "Virtual key is not allowed to call this route. Only allowed to call routes: ['/v1/chat/completions', '/v1/models']. Tried to call route: /model/info",
+  });
+  assert.equal(
+    classifyFailure({ status: 403, body }),
+    "failed: key not allowed to call /model/info; ask the gateway admin",
+  );
+  assert.equal(
+    classifyFailure({ status: 403, errorMessage: "403: Virtual key is not allowed to call this route" }),
+    "failed: key not allowed to call this route; ask the gateway admin",
+  );
+
+  const longRoute = `Virtual key is not allowed to call this route. Tried to call route: /${"x".repeat(200)}`;
+  const reason = classifyFailure({ status: 403, body: longRoute });
+  assert.ok((reason?.length ?? 0) <= 120);
+  assert.ok(reason?.endsWith("; ask the gateway admin"));
+});
+
+test("leaves unrelated 403 failures to the existing fallback reason", () => {
+  const { pi, handlers } = fakeRuntime();
+  const state = newHubState();
+  registerErrors(pi, state, { apiKey: fakeKey });
+  const { ctx } = fakeContext();
+
+  emitMessage(handlers, ctx, assistant("error", "403: upstream credential is invalid"));
+
+  assert.equal(state.reason, "failed: upstream credential is invalid");
+});
+
+test("a route 403 reason remains redacted", () => {
+  const { pi, handlers } = fakeRuntime();
+  const state = newHubState();
+  registerErrors(pi, state, { apiKey: fakeKey });
+  const { ctx } = fakeContext();
+  const errorMessage = `403: ${JSON.stringify({
+    detail: `Virtual key is not allowed to call this route. Tried to call route: /${fakeKey}`,
+  })}`;
+
+  emitMessage(handlers, ctx, assistant("error", errorMessage));
+
+  assert.equal(state.reason, "failed: key not allowed to call /sk-***; ask the gateway admin");
+  assert.equal(state.reason?.includes(fakeKey), false);
 });
 
 test("classifies a provider error inside an HTTP 200 stream using the adapter error text", () => {

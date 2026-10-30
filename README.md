@@ -46,7 +46,7 @@ Gateway models are discovered from `/v1/models` and registered as provider `lite
 - `/litellm` lists matched model IDs, API, thinking levels, catalog source, and any model reason; it also lists skipped IDs and reasons, plus the last Claude cache result when available.
 - `/litellm refresh` fetches the catalog again. If it fails, the existing model list is kept and the failure is shown.
 
-The status line normally shows the model, thinking level, session cost, and key spend/budget window, for example `litellm · MODEL_ID · thinking high · session $X · month $X/$Y (resets Mon D)`. A missing thinking selection is shown as `default`; a non-month window (for example `7d`) keeps its label. If a turn has only an estimate, the session amount is prefixed with `~` and marked `(est.)`; once estimated, the session stays marked estimated. A failure reason replaces the normal status tail.
+The status line normally shows the model, thinking level, session cost, and key spend/budget window, for example `litellm · MODEL_ID · thinking high · session $X · month $X/$Y (resets Mon D)`. A missing thinking selection is shown as `default`; a non-month window (for example `7d`) keeps its label. If a turn has only an estimate, the session amount is prefixed with `~` and marked `(est.)`; once estimated, the session stays marked estimated. A failure reason replaces the normal status tail. Gateway fallback and retry headers add `fallback` and `retry×N` markers for the latest turn; absent or invalid headers add no marker.
 
 ### Spend and Claude caching
 
@@ -59,13 +59,13 @@ Claude uses `/v1/messages` via `anthropic-messages`. Cache markers pass through 
 - Configuration: `not configured: no gateway URL`, `not configured: no key`, `not configured: configuration unavailable`, `not configured: gateway URL is not a valid URL`, `not configured: gateway URL must not contain credentials`, or `not configured: gateway URL must be https`.
 - Model/catalog reasons in `/litellm`: `not in pi's catalog`, `ambiguous catalog match`, `model does not reason`, `catalog lists no effort levels`, `kimi needs its own thinking switch`, or `deepseek needs its own thinking switch`. A skipped non-chat model is labeled `not a chat model`.
 - Cache warning: `cache: missed 2 turns in row (gateway caching may be off)`.
-- Failures: `failed: out of budget (...)`, `failed: gateway busy (parallel request limit)`, `failed: blocked by Cloudflare (1010)`, `failed: gateway error inside a 200 response: ...`, or the fallback `failed: <short message>` for other errors.
+- Failures: `failed: out of budget (...)`, `failed: gateway busy (parallel request limit)`, `failed: key not allowed to call <route>; ask the gateway admin` for route-scoped key 403s, `failed: blocked by Cloudflare (1010), not a key problem`, `failed: gateway error inside a 200 response: ...`, or the fallback `failed: <short message>` for other errors.
 
 Pi does not retry a budget HTTP 400; it may retry a 429 up to three times by default. The extension cannot stop pi's retries.
 
 ## Events for other extensions
 
-The hub emits `litellm-hub:state` on status updates with `configured`, `model`, `thinkingLevel`, `levelsAvailable`, `reason`, `sessionCost`, `sessionEstimated`, `keySpend`, `keyBudget`, `resetAt`, `window`, `lastCache`, `modelsMatched`, `modelsSkipped`, and `at`. Optional values may be absent. Emit `litellm-hub:request` to request the current snapshot. Failures emit `litellm-hub:failure` with `{ model, reason, at }`.
+The hub emits `litellm-hub:state` on status updates with `configured`, `model`, `thinkingLevel`, `levelsAvailable`, `reason`, `sessionCost`, `sessionEstimated`, `keySpend`, `keyBudget`, `attemptedFallbacks`, `attemptedRetries`, `resetAt`, `window`, `lastCache`, `modelsMatched`, `modelsSkipped`, and `at`. Optional values may be absent. Emit `litellm-hub:request` to request the current snapshot. Failures emit `litellm-hub:failure` with `{ model, reason, at }`.
 
 In another extension, listen before requesting the initial snapshot:
 
