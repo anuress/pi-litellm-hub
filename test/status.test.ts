@@ -25,11 +25,10 @@ function activeState(overrides: Record<string, unknown> = {}) {
   });
 }
 
-test("renders the complete normal status line with month spend and UTC reset date", () => {
-  assert.equal(
-    renderStatus(activeState(spend)),
-    "litellm · model-one · thinking high · session $0.12 · month $74.73/$200 (resets Nov 1)",
-  );
+test("renders the complete status line with budget spend and UTC reset date", () => {
+  const expected = "litellm · model-one · thinking high · session $0.12 · budget $74.73/$200 (resets Nov 1)";
+  assert.equal(renderStatus(activeState(spend)), expected);
+  assert.equal(renderStatus(activeState({ ...spend, window: "30d" })), expected);
 });
 
 test("shows fallback and retry markers only for positive attempt counts", () => {
@@ -63,10 +62,14 @@ test("uses default and off thinking labels when selected", () => {
   assert.match(renderStatus(activeState({ thinking: "off" })), /thinking off/);
 });
 
-test("uses a non-month window label", () => {
+test("shows a non-30-day window with the budget reset date", () => {
   assert.equal(
     renderStatus(activeState({ ...spend, window: "7d" })),
-    "litellm · model-one · thinking high · session $0.12 · 7d $74.73/$200 (resets Nov 1)",
+    "litellm · model-one · thinking high · session $0.12 · budget $74.73/$200 (7d, resets Nov 1)",
+  );
+  assert.equal(
+    renderStatus(activeState({ keySpend: 74.73, keyBudget: 200, window: "7d" })),
+    "litellm · model-one · thinking high · session $0.12 · budget $74.73/$200 (7d)",
   );
 });
 
@@ -93,7 +96,7 @@ test("renders model count and spend when there is no active LiteLLM model", () =
     models: [{}, {}, {}],
     ...spend,
   });
-  assert.equal(renderStatus(state), "litellm · 3 models · month $74.73/$200 (resets Nov 1)");
+  assert.equal(renderStatus(state), "litellm · 3 models · budget $74.73/$200 (resets Nov 1)");
 });
 
 test("model report lists default thinking and skipped model reasons", () => {
@@ -118,6 +121,32 @@ test("model report lists default thinking and skipped model reasons", () => {
   assert.match(report, /reasoning-model \| anthropic-messages \| minimal, low, medium, high \| anthropic/);
   assert.match(report, /Last Claude cache: cache: hit \(read 10\.3k\)/);
   assert.match(report, /Skipped:\n- text-embedding-model — not a chat model/);
+});
+
+test("keeps quiet and visible estimate-rate fallbacks in the report, not the status line", () => {
+  for (const reason of ["key can't read /model/info", "gateway /model_group/info returned 500"]) {
+    const state = Object.assign(newHubState(), {
+      activeModelId: "model-one",
+      models: [{
+        id: "model-one",
+        api: "openai-responses",
+        catalogSource: "openai",
+        priceSources: { input: "gateway", output: "pi catalog", cacheRead: "pi catalog", cacheWrite: "pi catalog" },
+        model: { reasoning: true },
+      }],
+      priceFallbackReason: reason,
+    });
+    const status = renderStatus(state);
+    const report = renderModelReport(state);
+
+    assert.equal(status, "litellm · model-one · thinking default · session $0.00");
+    assert.doesNotMatch(status, /rates|prices|pi built-in|pi catalog/);
+    assert.match(report, /rates: gateway \(input\) \+ pi built-in \(output, cache read, cache write\)/);
+    assert.equal(
+      report.split("\n").filter((line) => line.startsWith("Estimate rates:")).join("\n"),
+      `Estimate rates: pi built-in (${reason})`,
+    );
+  }
 });
 
 test("updateStatus redacts a key embedded in the status reason", () => {

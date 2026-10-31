@@ -187,7 +187,7 @@ test("discovery applies gateway limits and skips modes outside chat APIs", async
   );
 });
 
-test("metadata route denial explains catalog pricing in status and the model report", async () => {
+test("metadata route denial reports estimated rates without adding them to status", async () => {
   const runtime = fakeRuntime();
   const paths: string[] = [];
   const fetchImpl: typeof fetch = async (input) => {
@@ -210,10 +210,10 @@ test("metadata route denial explains catalog pricing in status and the model rep
     "/model/info",
     "/v1/models",
   ]);
-  assert.equal(status, "litellm · 1 models · prices: pi catalog (key can't read /model/info)");
-  assert.equal((status.match(/prices: pi catalog/g) ?? []).length, 1);
+  assert.equal(status, "litellm · 1 models");
+  assert.doesNotMatch(status, /rates|prices|pi built-in|pi catalog/);
   await runtime.commands.get("litellm")?.("", ctx);
-  assert.match(notifications.at(-1)?.message ?? "", /prices: pi catalog/);
+  assert.match(notifications.at(-1)?.message ?? "", /^Estimate rates: pi built-in \(key can't read \/model\/info\)$/m);
   assert.equal(state.priceFallbackReason, "key can't read /model/info");
 });
 
@@ -308,6 +308,29 @@ test("refresh re-registers the expanded catalog and reports the new count", asyn
   assert.equal(runtime.providers.length, 2);
   assert.equal(runtime.providers[1].config.models.length, 2);
   assert.equal(notifications.at(-1)?.message, "refreshed: 2 models");
+});
+
+test("refresh updates estimated-rate fallback without adding it to the status", async () => {
+  const runtime = fakeRuntime();
+  let fallback = false;
+  const fetchImpl: typeof fetch = async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (!fallback || path === "/v1/models") return responseFor(["chat-model"]);
+    return path === "/model_group/info"
+      ? new Response("temporary gateway failure", { status: 500 })
+      : new Response("forbidden", { status: 403 });
+  };
+  const state = await createHub(dependencies(runtime.pi, fetchImpl));
+  state.activeModelId = "chat-model";
+  const { ctx, statuses, notifications } = fakeContext();
+  fallback = true;
+
+  await runtime.commands.get("litellm")?.("refresh", ctx);
+
+  assert.equal(state.priceFallbackReason, "gateway /model_group/info returned 500");
+  assert.equal(statuses.at(-1)?.text, "litellm · chat-model · thinking default · session $0.00");
+  await runtime.commands.get("litellm")?.("", ctx);
+  assert.match(notifications.at(-1)?.message ?? "", /^Estimate rates: pi built-in \(gateway \/model_group\/info returned 500\)$/m);
 });
 
 test("a failed refresh retains the prior catalog and redacts its notification", async () => {

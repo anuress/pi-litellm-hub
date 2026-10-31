@@ -99,16 +99,14 @@ function spendSegment(state: HubState): string {
   // Missing spend data is not the same as a zero balance.
   if (state.keySpend === undefined) return "";
 
-  // The gateway's 30-day window is presented as the familiar monthly label.
-  const window = state.window === undefined || state.window === "30d" ? "month" : state.window;
+  // The 30-day window is the default budget; only other windows need a qualifier.
+  const window = state.window && state.window !== "30d" ? state.window : undefined;
+  const resetDate = state.resetAt ? formatResetDate(state.resetAt) : undefined;
   const budget = state.keyBudget === undefined ? "?" : state.keyBudget.toFixed(0);
-  let segment = `${window} $${state.keySpend.toFixed(2)}/$${budget}`;
-  if (state.resetAt) {
-    // The shared formatter keeps status and failure reasons on the same UTC calendar day.
-    const resetDate = formatResetDate(state.resetAt);
-    if (resetDate) segment += ` (resets ${resetDate})`;
-  }
-  return ` · ${segment}`;
+  const details = [window, resetDate ? `resets ${resetDate}` : undefined]
+    .filter((detail) => detail !== undefined)
+    .join(", ");
+  return ` · budget $${state.keySpend.toFixed(2)}/$${budget}${details ? ` (${details})` : ""}`;
 }
 
 function routeSignalSegment(state: HubState): string {
@@ -119,10 +117,6 @@ function routeSignalSegment(state: HubState): string {
   return signals.length > 0 ? ` · ${signals.join(" · ")}` : "";
 }
 
-function priceFallbackSegment(state: HubState): string {
-  return state.priceFallbackReason ? ` · prices: pi catalog (${state.priceFallbackReason})` : "";
-}
-
 export function renderStatus(state: HubState): string {
   // Configuration errors take precedence over empty model and spend data.
   if (state.notConfigured) return `litellm · not configured: ${state.notConfigured}`;
@@ -131,19 +125,19 @@ export function renderStatus(state: HubState): string {
   if (state.activeModelId) {
     const model = `litellm · ${state.activeModelId}`;
     // A failure reason replaces the normal model tail instead of hiding the failure.
-    if (state.reason) return `${model} · ${state.reason}${routeSignals}${priceFallbackSegment(state)}`;
+    if (state.reason) return `${model} · ${state.reason}${routeSignals}`;
 
     const thinking = state.thinking ?? "default";
     const estimate = state.sessionEstimated ? "~" : "";
     const estimatedLabel = state.sessionEstimated ? " (est.)" : "";
     const session = `session ${estimate}$${state.sessionCost.toFixed(2)}${estimatedLabel}`;
-    return `${model} · thinking ${thinking} · ${session}${spendSegment(state)}${routeSignals}${priceFallbackSegment(state)}`;
+    return `${model} · thinking ${thinking} · ${session}${spendSegment(state)}${routeSignals}`;
   }
 
   // Without an active model, retain the catalog count while making startup failures visible.
   const count = `litellm · ${state.models.length} models`;
   const reason = state.reason ? ` · ${state.reason}` : "";
-  return `${count}${reason}${spendSegment(state)}${routeSignals}${priceFallbackSegment(state)}`;
+  return `${count}${reason}${spendSegment(state)}${routeSignals}`;
 }
 
 const PRICE_SOURCE_FIELDS = [
@@ -157,9 +151,10 @@ function priceSourcesLabel(model: MatchedModel): string {
   const grouped = new Map<string, string[]>();
   for (const [field, label] of PRICE_SOURCE_FIELDS) {
     const source = model.priceSources?.[field] ?? "unavailable";
-    const fields = grouped.get(source) ?? [];
+    const displaySource = source === "pi catalog" ? "pi built-in" : source;
+    const fields = grouped.get(displaySource) ?? [];
     fields.push(label);
-    grouped.set(source, fields);
+    grouped.set(displaySource, fields);
   }
   return [...grouped].map(([source, fields]) =>
     fields.length === PRICE_SOURCE_FIELDS.length ? source : `${source} (${fields.join(", ")})`,
@@ -189,11 +184,14 @@ export function renderModelReport(state: HubState): string {
   const lines = [`LiteLLM models: ${state.models.length} matched, ${state.skipped.length} skipped`];
   for (const model of state.models) {
     const fields = [model.id, model.api, levelsLabel(model), model.catalogSource ?? "unknown"];
-    fields.push(`prices: ${priceSourcesLabel(model)}`);
+    fields.push(`rates: ${priceSourcesLabel(model)}`);
     if (model.reason) fields.push(model.reason);
     lines.push(`- ${fields.join(" | ")}`);
   }
 
+  if (state.priceFallbackReason) {
+    lines.push(`Estimate rates: pi built-in (${state.priceFallbackReason})`);
+  }
   if (state.lastCache !== undefined) lines.push(`Last Claude cache: ${state.lastCache}`);
 
   lines.push("Skipped:");

@@ -64,7 +64,7 @@ test("uses model-group info first and converts all four prices to pi units", asy
   });
   const matched = matchModels(["known-model"], catalog, result.models);
   const state = Object.assign(newHubState(), { models: matched.models });
-  assert.match(renderModelReport(state), /prices: gateway/);
+  assert.match(renderModelReport(state), /rates: gateway/);
   assert.equal(renderStatus(state), "litellm · 1 models");
 });
 
@@ -124,6 +124,9 @@ test("falls back to v1 models when neither metadata route is readable", async ()
   assert.deepEqual(calls, ["/model_group/info", "/model/info", "/v1/models"]);
   assert.deepEqual(result.models, [{ id: "legacy-model", mode: "chat" }]);
   assert.equal(result.priceFallbackReason, "key can't read /model/info");
+  const state = Object.assign(newHubState(), { priceFallbackReason: result.priceFallbackReason });
+  assert.equal(renderStatus(state), "litellm · 0 models");
+  assert.match(renderModelReport(state), /^Estimate rates: pi built-in \(key can't read \/model\/info\)$/m);
 });
 
 test("describes rejected metadata credentials as key rejection", async () => {
@@ -196,10 +199,9 @@ test("keeps a server error as the catalog-price fallback reason", async () => {
 
   assert.deepEqual(calls, ["/model_group/info", "/model/info", "/v1/models"]);
   assert.equal(result.priceFallbackReason, "gateway /model_group/info returned 500");
-  assert.equal(
-    renderStatus(Object.assign(newHubState(), { priceFallbackReason: result.priceFallbackReason })),
-    "litellm · 0 models · prices: pi catalog (gateway /model_group/info returned 500)",
-  );
+  const state = Object.assign(newHubState(), { priceFallbackReason: result.priceFallbackReason });
+  assert.equal(renderStatus(state), "litellm · 0 models");
+  assert.match(renderModelReport(state), /^Estimate rates: pi built-in \(gateway \/model_group\/info returned 500\)$/m);
 });
 
 test("shares one timeout budget when the second metadata route stalls", async () => {
@@ -300,5 +302,5 @@ test("ignores garbage gateway fields and falls back per price field without chan
   });
   assert.equal(matched.models[0].model.contextWindow, 64000);
   assert.equal(matched.models[0].model.maxTokens, 8192);
-  assert.match(report, /prices: gateway \(input\) \+ pi catalog \(output, cache read, cache write\)/);
+  assert.match(report, /rates: gateway \(input\) \+ pi built-in \(output, cache read, cache write\)/);
 });
