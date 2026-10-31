@@ -49,33 +49,14 @@ Keep that file private (`chmod 600 ~/.pi/agent/auth.json`) and out of any dotfil
 
 Use the gateway root URL. HTTPS is required except for `http://localhost` and `http://127.0.0.1`; URL userinfo (`user:password@`) is rejected. A trailing slash or `/v1` suffix is normalized away.
 
-## Use and debug
+## Use
 
-Gateway models are registered as provider `litellm`. Matched models use pi's built-in `anthropic-messages`, `openai-responses`, or `openai-completions` API. From the catalog entry the hub takes the model description (name, reasoning, input types, limits), fallback costs, thinking levels, and model-specific flags such as Claude's adaptive thinking; it never inherits features of a provider's own API (such as OpenAI tool search), which the gateway does not forward. Gateway metadata also informs limits and filtering: a positive-integer `max_input_tokens` can only lower a catalog model's context window, while its catalog output limit is preserved. Unknown models use reported positive-integer input/output limits in place of the conservative defaults; missing limits keep those defaults. Explicit modes other than `chat`/`responses` are skipped, and the existing ID filter is used only when mode is absent. LiteLLM requests carry a `pi-litellm-hub/<version>` User-Agent and the current session ID in `x-litellm-session-id`. Select a discovered model in pi, or start pi with a model such as `litellm/MODEL_ID:LEVEL`.
+Select a `litellm/...` model in pi, or start pi with `litellm/MODEL_ID:LEVEL`. The status line shows the model, thinking level, session cost and key budget, for example `litellm · MODEL_ID · thinking high · session $0.12 · budget $40.00/$200 (resets Nov 1)`. A `~` and `(est.)` mark a session cost that includes pi's estimate (Claude turns; the gateway reports no cost for them). If a request fails, a short reason replaces the tail of the line.
 
-### Model data sources
+- `/litellm` lists matched and skipped models with their API, thinking levels and rate source, plus the last Claude cache result.
+- `/litellm refresh` repeats gateway model discovery and keeps the current list if it fails.
 
-Discovery prefers `/model_group/info`, then `/model/info`; a usable response supplies model IDs, mode, limits, and rates. If both metadata routes are unavailable or unusable, `/v1/models` supplies IDs, mode, and limits. Gateway rates override pi built-in rates field by field after conversion from per-token to pi's USD-per-million-token units; a missing or invalid rate field keeps its pi-side value (catalog rate or the unknown-model default). Thinking levels always come from pi. `/litellm` shows each model's rate source, using `pi built-in` for pi-provided rates. If `/v1/models` succeeds after both metadata routes fail, the model report includes `Estimate rates: pi built-in (<reason>)`; rate fallback reasons do not appear in the status line.
-
-- `/litellm` lists matched model IDs, API, thinking levels, catalog source, rate source, and any model reason; it also lists skipped IDs and reasons, plus the last Claude cache result when available.
-- `/litellm refresh` repeats gateway model discovery. If it fails, the existing model list is kept and the failure is shown.
-
-The status line normally shows the model, thinking level, session cost, and key spend/budget, for example `litellm · MODEL_ID · thinking high · session $X · budget $X/$Y (resets Mon D)`. Non-30-day windows remain visible, for example `budget $X/$Y (7d, resets Mon D)` or `budget $X/$Y (7d)` when no reset date is known. A missing thinking selection is shown as `default`; if a turn has only an estimate, the session amount is prefixed with `~` and marked `(est.)`, and once estimated the session stays marked estimated. A request failure reason replaces the normal status tail. Gateway fallback and retry headers add `fallback` and `retry×N` markers for the latest turn; absent or invalid headers add no marker.
-
-### Spend and Claude caching
-
-OpenAI Responses cost is read from the `response.completed` stream event. Streamed Chat Completions requests ask for `include_usage` so the final chunk can provide cost. Claude streams do not carry gateway cost, so those turns use pi's estimate. Key spend and budget come from the `x-litellm-key-spend` and `x-litellm-key-max-budget` response headers; the displayed spend adds the current turn to the spend observed before that request. `/key/info` supplies only the reset date and window.
-
-Claude uses `/v1/messages` via `anthropic-messages`. Cache markers pass through unchanged: caching is controlled by the gateway, and the hub only reports cache reads/writes (`cache: hit (read …)` or `cache: miss (wrote …, read 0)`). It shows a warning after two consecutive Claude cache misses (`cache: missed 2 turns in row (gateway caching may be off)`). There is no `litellmHub.claudeCache` setting.
-
-### Reasons you may see
-
-- Configuration: `not configured: no gateway URL`, `not configured: no key`, `not configured: configuration unavailable`, `not configured: gateway URL is not a valid URL`, `not configured: gateway URL must not contain credentials`, or `not configured: gateway URL must be https`.
-- Model/catalog reasons in `/litellm`: `not in pi's catalog`, `ambiguous catalog match`, `model does not reason`, `catalog lists no effort levels`, `kimi needs its own thinking switch`, or `deepseek needs its own thinking switch`. A skipped non-chat model is labeled `not a chat model`.
-- Cache warning: `cache: missed 2 turns in row (gateway caching may be off)`.
-- Failures: `failed: out of budget (...)`, `failed: gateway busy (parallel request limit)`, `failed: key not allowed to call <route>; ask the gateway admin` for route-scoped key 403s, `failed: blocked by Cloudflare (1010), not a key problem`, `failed: gateway error inside a 200 response: ...`, or the fallback `failed: <short message>` for other errors.
-
-Pi does not retry a budget HTTP 400; it may retry a 429 up to three times by default. The extension cannot stop pi's retries.
+Model limits and rates come from the gateway's `/model_group/info` or `/model/info` when the key may read them, otherwise from `/v1/models` plus pi's catalog. Thinking levels always come from pi's catalog.
 
 ## Events for other extensions
 
