@@ -90,7 +90,7 @@ node scripts/privacy-scan.mjs --history
 
 ## Development
 
-Run the tests with `node --test test/`. The extension is TypeScript loaded directly by pi; no build step is required.
+Run the tests with `npm test`. The extension is TypeScript loaded directly by pi; no build step is required.
 
 ## Release
 
