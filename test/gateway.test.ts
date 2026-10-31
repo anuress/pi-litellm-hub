@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { gatewayGetJson } from "../extensions/gateway.ts";
 
-const cfg = { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" };
+const cfg = {
+  baseUrl: "https://litellm.example.com",
+  apiKeyRef: "$LITELLM_API_KEY",
+  claudeCacheWarming: false,
+};
 const fakeApiKey = ["sk", "abcdefgh12"].join("-");
 
 test("times out gateway requests with a readable duration", async () => {

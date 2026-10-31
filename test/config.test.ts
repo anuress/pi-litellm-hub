@@ -136,7 +136,24 @@ test("uses an environment variable reference when the key is configured", () => 
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.config.apiKeyRef, "$LITELLM_API_KEY");
-      assert.deepEqual(Object.keys(result.config).sort(), ["apiKeyRef", "baseUrl"]);
+      assert.equal(result.config.claudeCacheWarming, false);
+      assert.deepEqual(Object.keys(result.config).sort(), ["apiKeyRef", "baseUrl", "claudeCacheWarming"]);
+    }
+  });
+});
+
+test("enables Claude cache warming only for a boolean true in global settings", () => {
+  withHome((home) => {
+    writeSettings(home, { litellmHub: { claudeCacheWarming: true } });
+    const enabled = configFor(home);
+    assert.equal(enabled.ok, true);
+    if (enabled.ok) assert.equal(enabled.config.claudeCacheWarming, true);
+
+    for (const value of [false, "true", 1, null, {}, []]) {
+      writeSettings(home, { litellmHub: { claudeCacheWarming: value } });
+      const invalid = configFor(home);
+      assert.equal(invalid.ok, true);
+      if (invalid.ok) assert.equal(invalid.config.claudeCacheWarming, false);
     }
   });
 });
@@ -197,14 +214,17 @@ test("ignores a project-local pi settings file", () => {
     mkdirSync(join(cwd, ".pi"), { recursive: true });
     writeFileSync(
       join(cwd, ".pi", "settings.json"),
-      JSON.stringify({ litellmHub: { baseUrl: "https://litellm.example.com/project" } }),
+      JSON.stringify({ litellmHub: { baseUrl: "https://litellm.example.com/project", claudeCacheWarming: true } }),
     );
     withHome((home) => {
       writeSettings(home, { litellmHub: { baseUrl: "https://litellm.example.com" } });
       process.chdir(cwd);
       const result = loadConfig({ LITELLM_API_KEY: "sk-test" }, home);
       assert.equal(result.ok, true);
-      if (result.ok) assert.equal(result.config.baseUrl, "https://litellm.example.com");
+      if (result.ok) {
+        assert.equal(result.config.baseUrl, "https://litellm.example.com");
+        assert.equal(result.config.claudeCacheWarming, false);
+      }
     });
   } finally {
     process.chdir(previousCwd);

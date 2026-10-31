@@ -1,6 +1,6 @@
 # pi-litellm-hub
 
-A small pi extension for one LiteLLM gateway. It discovers gateway model IDs, matches them to pi's built-in model catalog for thinking-level support, uses pi's OpenAI and Anthropic protocols, and explains spend, caching, and failures in the status line.
+A small pi extension for one LiteLLM gateway. It discovers gateway model IDs, matches them to pi's built-in model catalog for thinking-level support, uses pi's OpenAI and Anthropic protocols, and explains spend, caching, and failures in the status line. It is built for LiteLLM virtual keys that may not be allowed to read `/model/info`; when both metadata routes are unavailable, it falls back to `/v1/models` plus pi's catalog.
 
 ## Requirements
 
@@ -23,10 +23,13 @@ Add the gateway configuration to that file, merging it with your existing settin
 ```json
 {
   "litellmHub": {
-    "baseUrl": "https://litellm.example.com"
+    "baseUrl": "https://litellm.example.com",
+    "claudeCacheWarming": false
   }
 }
 ```
+
+`claudeCacheWarming` defaults to `false`; set it to `true` only if the gateway returns cache reads. Each warm-up writes to the cache, so check `/litellm` or the cache hit/miss line first.
 
 The top-level `packages` list loads this pi package; `package.json` declares `"pi": { "extensions": ["./extensions/index.ts"] }`. Configuration is global only; project-level `.pi/settings.json` files are ignored. There is no default gateway URL. A non-empty `LITELLM_BASE_URL` overrides `litellmHub.baseUrl`:
 
@@ -107,3 +110,8 @@ node scripts/privacy-scan.mjs --history
 ## Development
 
 Run the tests with `node --test test/`. The extension is TypeScript loaded directly by pi; no build step is required.
+
+## Planned
+
+- Keep the last discovered model list so pi can still offer LiteLLM models if the gateway is unreachable at startup.
+- Optionally use models.dev metadata for limits and prices when models are missing from pi's catalog.

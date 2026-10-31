@@ -173,8 +173,9 @@ function modelConfig(
   id: string,
   api: Protocol,
   levels: Record<string, string | null> | undefined,
+  claudeCacheWarming: boolean,
 ): Record<string, unknown> {
-  // Allowlist only: promptCache and transport fields are never inherited.
+  // Keep transport fields out; include promptCache only for explicitly enabled Anthropic models.
   const copied = Object.fromEntries(
     ["name", "reasoning", "input", "cost", "contextWindow", "maxTokens"]
       .filter((key) => key in catalogModel)
@@ -188,6 +189,12 @@ function modelConfig(
   if (Object.keys(compat).length) result.compat = compat;
   // Never preserve a catalog map when thinkingFor did not approve levels.
   if (levels !== undefined) result.thinkingLevelMap = levels;
+  if (claudeCacheWarming && api === "anthropic-messages") {
+    const catalogPromptCache = Object.hasOwn(catalogModel, "promptCache")
+      ? catalogModel.promptCache
+      : undefined;
+    result.promptCache = catalogPromptCache ?? { short: 300, long: 3600 };
+  }
   return result;
 }
 
@@ -208,6 +215,7 @@ export function matchModels(
   ids: string[],
   catalog: Catalog,
   gatewayModels: GatewayModel[] = [],
+  claudeCacheWarming = false,
 ): { models: MatchedModel[]; skipped: Skipped[] } {
   const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
   const providers = catalog.providers();
@@ -257,7 +265,7 @@ export function matchModels(
       catalogSource: first.provider,
       ...(thinking.levels !== undefined ? { levels: thinking.levels } : {}),
       ...(thinking.reason !== undefined ? { reason: thinking.reason } : {}),
-      model: modelConfig(first.model, id, api, thinking.levels),
+      model: modelConfig(first.model, id, api, thinking.levels, claudeCacheWarming),
     }, gatewayModel), gatewayModel));
   }
 

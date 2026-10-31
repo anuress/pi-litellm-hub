@@ -286,7 +286,11 @@ test("normalizes Azure Responses and falls back for unsupported catalog APIs", (
 });
 
 test("rejects HTTP and opaque gateway redirects", async () => {
-  const cfg = { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" };
+  const cfg = {
+    baseUrl: "https://litellm.example.com",
+    apiKeyRef: "$LITELLM_API_KEY",
+    claudeCacheWarming: false,
+  };
   const responses = [new Response("", { status: 302 }), { status: 0, type: "opaqueredirect" } as Response];
   for (const response of responses) {
     const fetchImpl: typeof fetch = async () => response;
@@ -301,7 +305,7 @@ test("redacts the API key from a gateway error body", async () => {
 
   await assert.rejects(
     fetchGatewayModels(
-      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" },
+      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY", claudeCacheWarming: false },
       apiKey,
       fetchImpl,
     ),
@@ -332,7 +336,7 @@ test("fetches gateway model metadata with manual redirects and the package user 
   };
 
   const listed = await fetchGatewayModels(
-    { baseUrl: "https://litellm.example.com/", apiKeyRef: "$LITELLM_API_KEY" },
+    { baseUrl: "https://litellm.example.com/", apiKeyRef: "$LITELLM_API_KEY", claudeCacheWarming: false },
     fakeApiKey,
     fetchImpl,
   );
@@ -357,12 +361,49 @@ test("rejects a successful response without the documented data list", async () 
 
   await assert.rejects(
     fetchGatewayModels(
-      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" },
+      { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY", claudeCacheWarming: false },
       fakeApiKey,
       fetchImpl,
     ),
     /invalid model list/,
   );
+});
+
+test("warms only Claude caches when enabled and preserves catalog lifetimes", () => {
+  const catalogPromptCache = { short: 120, long: 900 };
+  const inheritedPromptCache = { short: 999, long: 999 };
+  const inheritedModel = Object.assign(
+    Object.create({ promptCache: inheritedPromptCache }),
+    catalogModel({ id: "claude-inherited", provider: "anthropic", api: "anthropic-messages" }),
+  );
+  const entries = [
+    {
+      provider: "anthropic",
+      model: catalogModel({ id: "claude-default", provider: "anthropic", api: "anthropic-messages" }),
+    },
+    { provider: "anthropic", model: inheritedModel },
+    {
+      provider: "anthropic",
+      model: catalogModel({
+        id: "claude-custom",
+        provider: "anthropic",
+        api: "anthropic-messages",
+        promptCache: catalogPromptCache,
+      }),
+    },
+    { provider: "openai", model: catalogModel({ id: "gpt-model", promptCache: catalogPromptCache }) },
+  ];
+  const models = fakeCatalog(entries);
+  const ids = ["claude-default", "claude-custom", "claude-inherited", "gpt-model"];
+  const disabled = matchModels(ids, models);
+  for (const { model } of disabled.models) assert.equal("promptCache" in model, false);
+
+  const enabled = matchModels(ids, models, [], true);
+  const byId = Object.fromEntries(enabled.models.map(({ id, model }) => [id, model]));
+  assert.deepEqual(byId["claude-default"].promptCache, { short: 300, long: 3600 });
+  assert.deepEqual(byId["claude-custom"].promptCache, catalogPromptCache);
+  assert.deepEqual(byId["claude-inherited"].promptCache, { short: 300, long: 3600 });
+  assert.equal("promptCache" in byId["gpt-model"], false);
 });
 
 test("keeps only model-intrinsic catalog compat and drops transport fields", () => {

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { createHub } from "../extensions/hub.ts";
 import type { Catalog } from "../extensions/models.ts";
@@ -102,13 +105,14 @@ function dependencies(
   fetchImpl: typeof fetch,
   options: {
     env?: Record<string, string | undefined>;
+    home?: string;
     resolveKey?: (ref: string, env: Record<string, string | undefined>) => string | undefined;
   } = {},
 ) {
   return {
     pi,
     env: options.env ?? env,
-    home: ".nonexistent-hub-test-home",
+    home: options.home ?? ".nonexistent-hub-test-home",
     fetchImpl,
     catalog,
     resolveKey: options.resolveKey ?? ((ref, values) => {
@@ -157,9 +161,42 @@ test("configured startup registers reference auth and only same-gateway model UR
   const anthropicModel = registration.config.models.find((model: any) => model.id === "claude-model");
   assert.equal("baseUrl" in openAiModel, false);
   assert.equal(anthropicModel.baseUrl, baseUrl);
+  assert.equal("promptCache" in anthropicModel, false);
   assert.equal(composeModelBaseUrl(registration.config, "claude-model"), baseUrl);
   assert.equal(composeModelBaseUrl(registration.config, "chat-model"), `${baseUrl}/v1`);
   assert.equal(registration.config.models.some((model: any) => model.baseUrl === "https://foreign.example/v1"), false);
+});
+
+test("global cache warming reaches Anthropic models and offline refresh", async () => {
+  const home = mkdtempSync(join(tmpdir(), "litellm-hub-cache-warming-"));
+  try {
+    mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+    writeFileSync(
+      join(home, ".pi", "agent", "settings.json"),
+      JSON.stringify({ litellmHub: { claudeCacheWarming: true } }),
+    );
+    const runtime = fakeRuntime();
+    const state = await createHub(
+      dependencies(runtime.pi, async () => responseFor(["chat-model", "claude-model"]), { home }),
+    );
+    const models = runtime.providers[0].config.models;
+    const claudeModel = models.find((model: any) => model.id === "claude-model");
+    const openAiModel = models.find((model: any) => model.id === "chat-model");
+
+    assert.equal(state.config?.claudeCacheWarming, true);
+    assert.deepEqual(claudeModel.promptCache, { short: 300, long: 3600 });
+    assert.equal("promptCache" in openAiModel, false);
+    const offline = await runtime.providers[0].config.refreshModels({
+      allowNetwork: false,
+      signal: new AbortController().signal,
+    });
+    assert.deepEqual(offline.find((model: any) => model.id === "claude-model")?.promptCache, {
+      short: 300,
+      long: 3600,
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("discovery applies gateway limits and skips modes outside chat APIs", async () => {

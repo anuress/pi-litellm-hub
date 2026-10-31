@@ -9,7 +9,11 @@ import {
 } from "../extensions/spend.ts";
 import { newHubState } from "../extensions/status.ts";
 
-const cfg = { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" };
+const cfg = {
+  baseUrl: "https://litellm.example.com",
+  apiKeyRef: "$LITELLM_API_KEY",
+  claudeCacheWarming: false,
+};
 const apiKey = ["fake", "gateway", "key"].join("-");
 
 type Handler = (event: any, ctx: any) => unknown;

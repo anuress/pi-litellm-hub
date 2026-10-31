@@ -87,7 +87,7 @@ export async function createHub(deps: HubDependencies): Promise<HubState> {
       : fetchImpl;
     const listed = await discoverGatewayModels(config, apiKey, requestFetch);
     return {
-      ...matchModels(listed.models.map(({ id }) => id), catalog, listed.models),
+      ...matchModels(listed.models.map(({ id }) => id), catalog, listed.models, config.claudeCacheWarming),
       ...(listed.priceFallbackReason ? { priceFallbackReason: listed.priceFallbackReason } : {}),
     };
   };

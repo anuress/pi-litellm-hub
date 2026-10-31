@@ -1,6 +1,6 @@
 {
   "name": "pi-litellm-hub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Small, readable pi connector for one LiteLLM gateway: catalog thinking levels, Claude over /v1/messages, honest spend, and a status line that says why.",
   "keywords": [
     "pi-package",

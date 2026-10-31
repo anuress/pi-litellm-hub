@@ -6,7 +6,11 @@ import type { GatewayModel } from "../extensions/gateway.ts";
 import { matchModels, type Catalog } from "../extensions/models.ts";
 import { newHubState, renderModelReport, renderStatus } from "../extensions/status.ts";
 
-const config = { baseUrl: "https://litellm.example.com", apiKeyRef: "$LITELLM_API_KEY" };
+const config = {
+  baseUrl: "https://litellm.example.com",
+  apiKeyRef: "$LITELLM_API_KEY",
+  claudeCacheWarming: false,
+};
 const apiKey = ["sk", "abcdefgh12"].join("-");
 
 function jsonResponse(value: unknown, status = 200): Response {
