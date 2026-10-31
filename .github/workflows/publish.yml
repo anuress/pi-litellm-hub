@@ -1,0 +1,29 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Verify tag matches package.json version
+        run: |
+          package_version="$(node --input-type=module -e 'import { readFileSync } from "node:fs"; console.log(JSON.parse(readFileSync("package.json", "utf8")).version)')"
+          if [ "$GITHUB_REF_NAME" != "v$package_version" ]; then
+            printf 'Tag "%s" does not match package.json version "%s"\n' "$GITHUB_REF_NAME" "$package_version" >&2
+            exit 1
+          fi
+      - run: npm publish --provenance

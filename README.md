@@ -92,6 +92,12 @@ node scripts/privacy-scan.mjs --history
 
 Run the tests with `node --test test/`. The extension is TypeScript loaded directly by pi; no build step is required.
 
+## Release
+
+One-time setup: configure npm trusted publishing for `anuress/pi-litellm-hub` with workflow `publish.yml` on npmjs.com.
+For each release, run `npm version 0.2.0` (replace with the new version) to update `package.json` and create the release commit and `v0.2.0` tag, then push it with `git push origin v0.2.0` (use the same version).
+GitHub Actions publishes the package to npm with provenance; no npm token secret is used.
+
 ## Planned
 
 - Keep the last discovered model list so pi can still offer LiteLLM models if the gateway is unreachable at startup.
