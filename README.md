@@ -95,8 +95,7 @@ Run the tests with `node --test test/`. The extension is TypeScript loaded direc
 ## Release
 
 One-time setup: configure npm trusted publishing for `anuress/pi-litellm-hub` with workflow `publish.yml` on npmjs.com.
-For each release, run `npm version 0.2.0` (replace with the new version) to update `package.json` and create the release commit and `v0.2.0` tag, then push both the commit and tag with `git push origin main v0.2.0` (use the same version).
-GitHub Actions publishes the package to npm with provenance; no npm token secret is used.
+For each release, run `npm run release -- 0.2.0` (replace with the new version), then push both the commit and tag with `git push origin main v0.2.0` (use the same version). The command updates `package.json`, creates the `chore: release` commit, and adds an annotated `v0.2.0` tag whose message contains the changelog. GitHub Actions publishes the package to npm with provenance and copies the tag notes into a GitHub Release; older lightweight tags fall back to generated notes. No npm token secret is used.
 
 ## Planned
 
