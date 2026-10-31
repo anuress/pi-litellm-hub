@@ -13,9 +13,17 @@
     "type": "git",
     "url": "git+https://github.com/anuress/pi-litellm-hub.git"
   },
+  "homepage": "https://github.com/anuress/pi-litellm-hub#readme",
+  "bugs": {
+    "url": "https://github.com/anuress/pi-litellm-hub/issues"
+  },
   "type": "module",
+  "files": [
+    "extensions/"
+  ],
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "prepublishOnly": "npm test && node scripts/privacy-scan.mjs --history"
   },
   "pi": {
     "extensions": [

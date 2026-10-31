@@ -10,11 +10,18 @@ A small pi extension for one LiteLLM gateway. It discovers gateway model IDs, ma
 
 ## Install and configure
 
-Add the checkout to the global `~/.pi/agent/settings.json`. Merge these properties into your existing file, replacing the package path with the checkout's absolute path:
+Install the package globally:
+
+```sh
+pi install npm:pi-litellm-hub
+```
+
+This adds `"npm:pi-litellm-hub"` to the top-level `packages` list in `~/.pi/agent/settings.json`. For development from a local checkout, use the checkout's absolute path (for example, `/absolute/path/to/pi-litellm-hub`) instead.
+
+Add the gateway configuration to that file, merging it with your existing settings:
 
 ```json
 {
-  "packages": ["/absolute/path/to/pi-litellm-hub"],
   "litellmHub": {
     "baseUrl": "https://litellm.example.com"
   }
